@@ -1,0 +1,8 @@
+# Ignore everything by default, then explicitly allow only what should be published.
+/*
+
+!/src/
+!/build.sh
+!/LICENSE
+!/README.md
+!/.gitignore

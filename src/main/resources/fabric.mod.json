@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "voxymap",
+  "version": "0.7.0",
+  "name": "VoxyMap",
+  "description": "Projects Voxy's stored LOD voxel data onto Xaero's World Map, filling in regions you have never walked through, and generates world chunks passively on the server so there is terrain to project. Never overwrites genuinely scanned tiles.",
+  "authors": [
+    "local"
+  ],
+  "license": "MIT",
+  "icon": "assets/voxymap/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "client": [
+      "dev.local.voxymap.VoxyMapClient"
+    ],
+    "main": [
+      "dev.local.voxymap.server.VoxyMapServer"
+    ],
+    "sodium:config_api_user": [
+      "dev.local.voxymap.SodiumOptions"
+    ]
+  },
+  "depends": {
+    "minecraft": ">=26.2 <26.3",
+    "java": ">=25",
+    "fabricloader": ">=0.16",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "sodium": "*",
+    "voxy": "*",
+    "xaeroworldmap": ">=1.44 <1.45"
+  }
+}
