@@ -86,7 +86,3 @@ pointed to with `VOXYMAP_DEPS_DIR`):
   `unzip -o -j xaeroworldmap-fabric-26.2-1.44.2.jar 'META-INF/jars/xaerolib-*.jar' -d deps`
 
 Output goes to `dist/voxymap-<version>.jar`.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
