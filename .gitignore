@@ -6,3 +6,19 @@
 !/LICENSE
 !/README.md
 !/.gitignore
+!/modrinth-description.md
+!/modrinth-summary.md
+!/local-deploy.sh
+
+# scripts/: mckey.ahk only. diag.ps1 covers the local dev setup, so it stays out
+# of the published tree and syncs through project-docs instead.
+!/scripts/
+/scripts/*
+!/scripts/mckey.ahk
+
+# Deliberately never published, synced to the hub through project-docs:
+#   reference/  decompiled Voxy and Xaero sources, third-party, not ours to publish
+#   libs/       third-party jars, resolved at build time
+#   dist/       build output
+#   benchmark.md  measurement notes, names the private lab machines and dashboard
+#   internal dev notes, test-harness notes, server setup notes, scripts/diag.ps1

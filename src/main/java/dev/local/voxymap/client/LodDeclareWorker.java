@@ -77,7 +77,7 @@ public final class LodDeclareWorker {
 
          try {
             WorldEngine engine = this.voxy.engine();
-            index = SectionIndex.enumerate(engine, this.voxy::levelGone);
+            index = dev.local.voxymap.voxy.VoxyIndexScan.enumerate(engine, this.voxy::levelGone);
          } finally {
             this.voxy.close();
          }

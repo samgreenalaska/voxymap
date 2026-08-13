@@ -1,0 +1,220 @@
+package dev.local.voxymap.dh;
+
+import com.seibel.distanthorizons.api.DhApi;
+import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataCache;
+import com.seibel.distanthorizons.api.interfaces.data.IDhApiTerrainDataRepo;
+import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
+import com.seibel.distanthorizons.api.objects.DhApiResult;
+import com.seibel.distanthorizons.api.objects.data.DhApiTerrainDataPoint;
+import dev.local.voxymap.util.Log;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.chunk.ChunkAccess;
+
+/**
+ * Everything this mod says to Distant Horizons, in one place.
+ *
+ * <p>DH is the LOD backend on clients where Voxy cannot run — Windows-on-ARM, where Voxy's
+ * renderer has no working driver path. It plays both parts Voxy plays elsewhere: it is where
+ * streamed LOD is put, and it is where the Xaero bridge reads terrain back out of.
+ *
+ * <h2>Two API surfaces, one supported</h2>
+ *
+ * <p>Writing goes through {@link IDhApiTerrainDataRepo#overwriteChunkDataAsync}, which takes a
+ * vanilla {@code ChunkAccess} and runs it through the same ingest DH uses for chunks the client
+ * loads for itself: wrapper, LOD build, mip, store, render. Nothing here reaches past the api
+ * package, and nothing here needs DH on the server.
+ *
+ * <p>The world-generator override ({@code AbstractDhApiChunkWorldGenerator}) looks like the natural
+ * fit and is not: on a multiplayer client DH builds a {@code DhClientLevel} whose LOD request state
+ * is a <em>remote</em> retrieval queue, so a registered generator is never consulted. The write path
+ * above is not gated on singleplayer.
+ *
+ * <h2>Everything is optional</h2>
+ *
+ * <p>DH is a suggestion, not a dependency, and this class is the only thing that loads its classes.
+ * Every entry point checks {@link #available()} first, so on a client without DH nothing here is
+ * ever linked.
+ */
+public final class DhBridge {
+   private static Boolean modLoaded;
+
+   /** Why the last read came back empty, when DH said why. Read by {@code /voxymap dh}. */
+   private static volatile String lastReadMessage;
+
+   public static String lastReadMessage() {
+      return lastReadMessage;
+   }
+
+   private DhBridge() {
+   }
+
+   /** Whether DH is installed at all. Cheap after the first call; does not touch DH's classes. */
+   public static boolean installed() {
+      Boolean cached = modLoaded;
+
+      if (cached == null) {
+         cached = net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("distanthorizons");
+         modLoaded = cached;
+      }
+
+      return cached;
+   }
+
+   /**
+    * Whether DH is installed <em>and</em> far enough through its own startup to be talked to.
+    *
+    * <p>{@code DhApi.Delayed} is exactly what its name says: the fields are null until DH has built
+    * its world, so every caller has to re-ask rather than binding once.
+    */
+   public static boolean available() {
+      return installed() && DhApi.Delayed.terrainRepo != null && DhApi.Delayed.worldProxy != null;
+   }
+
+   /** DH's version string, for {@code /voxymap status}. */
+   public static String version() {
+      if (!installed()) {
+         return "absent";
+      }
+
+      try {
+         return DhApi.getModVersion() + " (api " + DhApi.getApiMajorVersion() + "." + DhApi.getApiMinorVersion() + ")";
+      } catch (Throwable t) {
+         return "present, version unreadable";
+      }
+   }
+
+   /**
+    * The DH level for the level the client is in, or null if DH has not built one yet.
+    *
+    * <p>Matched on the wrapped Minecraft object rather than on the dimension name, because a server
+    * can present several levels with the same dimension type and DH keys its own identifiers off
+    * more than the name.
+    */
+   public static IDhApiLevelWrapper levelFor(ClientLevel level) {
+      if (level == null || !available()) {
+         return null;
+      }
+
+      try {
+         for (IDhApiLevelWrapper wrapper : DhApi.Delayed.worldProxy.getAllLoadedLevelWrappers()) {
+            if (wrapper != null && wrapper.getWrappedMcObject() == level) {
+               return wrapper;
+            }
+         }
+      } catch (Throwable t) {
+         Log.diag("DH level lookup failed: " + t);
+      }
+
+      return null;
+   }
+
+   /**
+    * Hands DH a chunk to ingest as if the client had just loaded it.
+    *
+    * <p>The two arguments are not the same object twice. The first is DH's own level wrapper,
+    * which is how the repo finds the level to write into. The second array is what DH turns into a
+    * chunk wrapper, and its second element must be the <em>vanilla</em> {@code Level} — DH derives
+    * its wrapper from that itself, through {@code ClientLevelWrapper.getWrapper}. Passing the api
+    * wrapper there instead is a {@code ClassCastException: Chunk wrapper creation failed}, which is
+    * what the first working build did.
+    *
+    * @return null on success, or why it was refused
+    */
+   public static String submitChunk(IDhApiLevelWrapper level, ChunkAccess chunk, Level mcLevel) {
+      if (level == null || mcLevel == null) {
+         return "no DH level";
+      }
+
+      if (!available()) {
+         return "DH is not ready";
+      }
+
+      try {
+         DhApiResult<Void> result = DhApi.Delayed.terrainRepo.overwriteChunkDataAsync(level, new Object[] {chunk, mcLevel});
+         return result != null && result.success ? null : result == null ? "no result" : result.message;
+      } catch (Throwable t) {
+         return t.toString();
+      }
+   }
+
+   /**
+    * Every stored terrain column in one chunk, indexed {@code [x][z][point]} top-down.
+    *
+    * <p>Each point is a run: one block state and biome over a {@code bottomYBlockPos ..
+    * topYBlockPos} span, which is what the map bridge wants anyway — a column walk over runs rather
+    * than over blocks.
+    *
+    * @return null when DH has nothing stored there, which is not an error
+    */
+   public static DhApiTerrainDataPoint[][][] chunkData(IDhApiLevelWrapper level, int chunkX, int chunkZ, IDhApiTerrainDataCache cache) {
+      if (level == null || !available()) {
+         return null;
+      }
+
+      try {
+         DhApiResult<DhApiTerrainDataPoint[][][]> result =
+            DhApi.Delayed.terrainRepo.getAllTerrainDataAtChunkPos(level, chunkX, chunkZ, cache);
+
+         if (result == null) {
+            lastReadMessage = "null result";
+            return null;
+         }
+
+         // Kept rather than discarded: "no data" and "you asked wrongly" both arrive as an empty
+         // answer here, and telling them apart from the outside is impossible. The map bridge
+         // treats both as "leave it to Xaero", which is safe but silent -- so the reason goes to
+         // /voxymap dh, where it can be read.
+         lastReadMessage = result.success ? null : result.message;
+         return result.success ? result.payload : null;
+      } catch (Throwable t) {
+         lastReadMessage = t.toString();
+         Log.diag("DH chunk read failed at " + chunkX + "," + chunkZ + ": " + t);
+         return null;
+      }
+   }
+
+   /**
+    * DH's own render distance in chunks, which is how far out it is worth reading.
+    *
+    * @return the configured radius, or the fallback if DH will not say
+    */
+   public static int renderDistanceChunks(int fallback) {
+      if (!installed() || DhApi.Delayed.configs == null) {
+         return fallback;
+      }
+
+      try {
+         Integer value = DhApi.Delayed.configs.graphics().chunkRenderDistance().getValue();
+         return value == null || value <= 0 ? fallback : value;
+      } catch (Throwable t) {
+         return fallback;
+      }
+   }
+
+   /** Whether DH is drawing at all. Terrain still stores and still maps when it is not. */
+   public static boolean renderingEnabled() {
+      if (!installed() || DhApi.Delayed.configs == null) {
+         return false;
+      }
+
+      try {
+         return Boolean.TRUE.equals(DhApi.Delayed.configs.graphics().renderingEnabled().getValue());
+      } catch (Throwable t) {
+         return false;
+      }
+   }
+
+   /** A cache DH is allowed to drop under memory pressure; reused across a sweep. */
+   public static IDhApiTerrainDataCache newCache() {
+      if (!available()) {
+         return null;
+      }
+
+      try {
+         return DhApi.Delayed.terrainRepo.createSoftCache();
+      } catch (Throwable t) {
+         return null;
+      }
+   }
+}

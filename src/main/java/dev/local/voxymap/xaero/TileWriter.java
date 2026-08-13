@@ -77,7 +77,19 @@ public final class TileWriter {
       this.palette = palette;
       this.overlayBuilder = new OverlayBuilder(mp.getOverlayManager());
       this.worldMinY = worldMinY;
-      this.caveStart = XaeroBridge.surfaceCaveStart(mp);
+      // The surface layer's own cave start, which is what SURFACE_LAYER means -- not whatever the
+      // layer object currently reports.
+      //
+      // Every tile this mod writes goes to SURFACE_LAYER, so every tile it writes is a surface
+      // tile and has to be stamped as one. Reading the value back off the layer looked more
+      // faithful and is not: Xaero puts a cave start on it while the player has cave mode ON, and
+      // a tile stamped with that renders as a cave slice afterwards. Xaero itself never writes a
+      // surface-layer tile that way, because in cave mode its own writer is writing to a cave
+      // layer instead.
+      //
+      // This only became reachable when the sweep stopped refusing to run in cave mode
+      // (XaeroBridge.isCaveLike); before that, no tile was ever written while a cave start was set.
+      this.caveStart = XaeroBridge.SURFACE_LAYER;
       this.reauthorAlways = reauthor;
       this.reauthor = reauthor;
       this.incompleteLimitPerChunk = (int)Math.floor(incompleteTolerance * 256.0);

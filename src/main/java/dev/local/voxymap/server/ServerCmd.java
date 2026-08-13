@@ -93,6 +93,16 @@ public final class ServerCmd {
                // client, only cost bandwidth. If the map is ever wrong on a client and a reconnect
                // does not fix it, this is the first thing to try.
                Commands.literal("resend").executes(ctx -> {
+                  if (streamer == null) {
+                     // No Voxy on this side, so nothing was ever streamed to forget. Only reachable
+                     // on a client hosting singleplayer with the Distant Horizons backend.
+                     ctx.getSource().sendSuccess(
+                        () -> Component.literal("[voxymap] nothing to resend: voxy is not installed on this side"),
+                        false
+                     );
+                     return 1;
+                  }
+
                   int forgotten = streamer.resend();
                   ctx.getSource().sendSuccess(
                      () -> Component.literal("[voxymap] forgot " + forgotten + " column receipts; everything in range will be sent again"),

@@ -20,7 +20,17 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
  */
 public final class VoxyMapServer implements ModInitializer {
    private static ChunkPregen pregen;
-   private static final ChunkIngest ingest = new ChunkIngest();
+
+   /**
+    * Both null where Voxy is not installed.
+    *
+    * <p>Not fields with initialisers any more: this entrypoint runs on a <em>client</em> too, and
+    * as of 0.8.0 a client can be one where Voxy is absent entirely (Windows-on-ARM, running the
+    * Distant Horizons backend). A {@code static final ChunkIngest ingest = new ChunkIngest()} loads
+    * Voxy's classes during class initialisation of this one, which on such a machine is a
+    * {@code NoClassDefFoundError} before the mod has done anything at all.
+    */
+   private static ChunkIngest ingest;
    private static LodStreamer streamer;
 
    @Override
@@ -36,21 +46,41 @@ public final class VoxyMapServer implements ModInitializer {
       dev.local.voxymap.net.LodProtocol.registerTypes();
 
       pregen = new ChunkPregen(config);
-      streamer = new LodStreamer(config);
-      streamer.register();
+
+      // Chunk generation needs nothing but Minecraft, so it runs either way. Everything below it
+      // -- voxelizing what was generated and streaming it out -- is Voxy's, and Voxy may not be
+      // here: this entrypoint also runs on a client, including one that has Distant Horizons
+      // instead. Naming those classes at all on that machine fails to link, so the check has to
+      // come before the constructor call rather than inside it.
+      boolean voxy = dev.local.voxymap.lod.Backends.voxyInstalled();
+
+      if (voxy) {
+         streamer = new LodStreamer(config);
+         streamer.register();
+      }
+
       ServerCmd.register(config, pregen, streamer);
 
-      // The LOD store lives under the world folder, so it is only knowable once a server exists.
-      ServerLifecycleEvents.SERVER_STARTING.register(server -> {
-         if (ServerVoxyInstance.install(server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("voxymap").resolve("lod"), config.lodIngestThreads)) {
-            ingest.register();
-         }
-      });
+      if (voxy) {
+         // The LOD store lives under the world folder, so it is only knowable once a server exists.
+         ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+            ingest = new ChunkIngest();
+
+            if (ServerVoxyInstance.install(server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).resolve("voxymap").resolve("lod"), config.lodIngestThreads)) {
+               ingest.register();
+            }
+         });
+      } else {
+         Log.info("voxy is not installed here, so this side generates chunks but does not store or stream LOD");
+      }
 
       ServerTickEvents.END_SERVER_TICK.register(server -> {
          try {
             pregen.tick(server);
-            streamer.tick(server);
+
+            if (streamer != null) {
+               streamer.tick(server);
+            }
          } catch (Throwable t) {
             // Never take the server down for this. Generation is the least important thing here.
             Log.error("chunk pregen tick failed", t);
@@ -59,8 +89,8 @@ public final class VoxyMapServer implements ModInitializer {
 
       ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
          Log.info(pregen.status());
-         Log.info(ingest.status());
-         Log.info(streamer.status());
+         Log.info(ingestStatus());
+         Log.info(streamStatus());
       });
 
       Log.info(
@@ -71,7 +101,7 @@ public final class VoxyMapServer implements ModInitializer {
 
    /** Exposed so /voxymap pregen can show whether LOD is actually being stored and sent. */
    public static String ingestStatus() {
-      return ingest.status();
+      return ingest == null ? "lod ingest: not running (voxy is not installed on this side)" : ingest.status();
    }
 
    public static String streamStatus() {

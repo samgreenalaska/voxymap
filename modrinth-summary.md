@@ -1,0 +1,1 @@
+Projects Voxy's stored LOD voxel data onto Xaero's World Map, automatically filling in terrain you've seen but never walked through, while its server-side half generates and streams world chunks in the background to keep terrain available to project.

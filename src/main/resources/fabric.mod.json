@@ -1,15 +1,21 @@
 {
   "schemaVersion": 1,
   "id": "voxymap",
-  "version": "0.7.0",
+  "version": "0.9.1",
   "name": "VoxyMap",
-  "description": "Projects Voxy's stored LOD voxel data onto Xaero's World Map, filling in regions you have never walked through, and generates world chunks passively on the server so there is terrain to project. Never overwrites genuinely scanned tiles.",
+  "description": "Projects stored LOD voxel data -- Voxy's, or Distant Horizons' where Voxy cannot run -- onto Xaero's World Map, filling in regions you have never walked through, and generates world chunks passively on the server so there is terrain to project. Never overwrites genuinely scanned tiles.",
   "authors": [
     "local"
   ],
   "license": "MIT",
   "icon": "assets/voxymap/icon.png",
   "environment": "*",
+  "mixins": [
+    {
+      "config": "voxymap.armfix.mixins.json",
+      "environment": "client"
+    }
+  ],
   "entrypoints": {
     "client": [
       "dev.local.voxymap.VoxyMapClient"
@@ -30,6 +36,7 @@
   "suggests": {
     "sodium": "*",
     "voxy": "*",
+    "distanthorizons": ">=3.2",
     "xaeroworldmap": ">=1.44 <1.45"
   }
 }

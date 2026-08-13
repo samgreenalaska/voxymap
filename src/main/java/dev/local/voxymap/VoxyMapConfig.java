@@ -121,8 +121,16 @@ public final class VoxyMapConfig {
     */
    public double applyBudgetMillis = 8.0;
 
-   /** Skip the apply stage entirely on ticks where the framerate is below this. 0 disables. */
-   public int pauseWhenFpsBelow = 45;
+   /**
+    * Skip the apply stage entirely on ticks where the framerate is below this. 0 disables.
+    *
+    * <p>20 rather than the 45 this used to default to. 45 assumes a machine that comfortably
+    * exceeds it, and on one that does not — a Snapdragon X laptop sits around 28-36 fps in this
+    * modpack — the apply stage never runs at all and the mod looks broken while working exactly as
+    * configured. A floor is meant to protect a struggling frame, not to switch the feature off on
+    * hardware that is merely slower than a desktop.
+    */
+   public int pauseWhenFpsBelow = 20;
 
    /**
     * Region sessions alive at once: one being written, the rest loading ahead of it.
@@ -159,6 +167,18 @@ public final class VoxyMapConfig {
 
    /** The Nether needs the full-cave column model, which v1 does not implement. */
    public boolean skipCaveLikeDimensions = true;
+
+   /**
+    * Which LOD database to read and write: {@code auto}, {@code voxy} or {@code dh}.
+    *
+    * <p>{@code auto} takes Voxy where it is installed and Distant Horizons otherwise, which is the
+    * right answer on both kinds of machine — Voxy is the better source, and it does not run on
+    * Windows-on-ARM at all. Pinning is for testing the DH path on a machine that has both.
+    *
+    * <p>Takes effect at startup, not on {@code /voxymap reload}: the backend is chosen once and the
+    * sweep, the receiver and the palette are all built against it.
+    */
+   public String lodBackend = "auto";
 
    /** Seconds to wait for a region to reach loadState 2 before requeuing it. */
    public int loadTimeoutSeconds = 20;

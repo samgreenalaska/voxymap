@@ -1,6 +1,7 @@
 package dev.local.voxymap.xaero;
 
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import xaero.map.MapProcessor;
 import xaero.map.WorldMap;
 import xaero.map.WorldMapSession;
@@ -139,10 +140,43 @@ public final class XaeroBridge {
       }
    }
 
-   /** Cave-layer dimensions (the Nether) need a different column model than v1 implements. */
+   /**
+    * Whether this <em>dimension</em> needs a cave column model, which the surface one would render
+    * wrong. The Nether does; the Overworld and End do not.
+    *
+    * <h2>Why this is not the surface layer's cave start any more</h2>
+    *
+    * <p>It used to be {@code surfaceCaveStart(mp) != Integer.MAX_VALUE}, which conflated two
+    * different things. Xaero sets a cave start on the layer when the <em>player turns cave mode
+    * on</em> — a view setting, in whatever dimension they happen to be in. So switching the world
+    * map to a cave cross-section in the Overworld made this answer "cave dimension", and the sweep
+    * refused to fill anything at all until it was given {@code --force}. Nothing about the terrain
+    * had changed; the map was merely being looked at differently.
+    *
+    * <p>That refusal was also pointless. Tiles are written to {@link #SURFACE_LAYER} explicitly,
+    * never to whichever layer is on screen, so filling the surface while the player looks at caves
+    * is both correct and invisible until they switch back — which is exactly when they want it
+    * already done.
+    *
+    * <p>What actually decides the column model is the dimension's own shape, so that is what is
+    * asked. A ceiling is the vanilla marker for it and is what makes the Nether different.
+    *
+    * <p>Fails open: if the dimension cannot be identified the answer is "not cave-like", because
+    * the surface model is right for every dimension but one, and refusing to draw is the worse
+    * mistake of the two.
+    */
    public static boolean isCaveLike(MapProcessor mp) {
-      int caveStart = surfaceCaveStart(mp);
-      return caveStart != Integer.MAX_VALUE;
+      ClientLevel level = Minecraft.getInstance().level;
+
+      if (level == null) {
+         return false;
+      }
+
+      try {
+         return level.dimensionType().hasCeiling();
+      } catch (Throwable t) {
+         return false;
+      }
    }
 
    /** Pool key only -- it is literally the string "placeholder". Pass it through, do not parse it. */

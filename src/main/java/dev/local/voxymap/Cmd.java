@@ -92,6 +92,13 @@ public final class Cmd {
          return root;
       }
 
+      // Only where DH is actually installed. Building the node creates a lambda whose target lives
+      // in DhProbe, and creating that lambda loads DhProbe -- which names DH types in its own
+      // signatures. On a Voxy-only client that is a NoClassDefFoundError at startup.
+      if (dev.local.voxymap.lod.Backends.dhInstalled()) {
+         root = root.then(dhNode());
+      }
+
       return root
          .then(
             ClientCommands.literal("wipe")
@@ -175,6 +182,34 @@ public final class Cmd {
     * The one command to run when a bit of the map looks wrong. Answers "whose fault is this" by
     * putting Xaero's per-chunk tile ownership next to what Voxy actually stored underneath it.
     */
+   /**
+    * {@code /voxymap dh}, built in its own method so nothing loads {@code DhProbe} unless it is
+    * called -- see the guard at the call site.
+    */
+   private static LiteralArgumentBuilder<FabricClientCommandSource> dhNode() {
+      return ClientCommands.literal("dh")
+         .executes(ctx -> {
+            replyAll(ctx.getSource(), dev.local.voxymap.dh.DhProbe.report());
+            return 1;
+         })
+         .then(
+            ClientCommands.argument("chunkX", IntegerArgumentType.integer())
+               .then(
+                  ClientCommands.argument("chunkZ", IntegerArgumentType.integer())
+                     .executes(ctx -> {
+                        replyAll(
+                           ctx.getSource(),
+                           dev.local.voxymap.dh.DhProbe.column(
+                              IntegerArgumentType.getInteger(ctx, "chunkX"),
+                              IntegerArgumentType.getInteger(ctx, "chunkZ")
+                           )
+                        );
+                        return 1;
+                     })
+               )
+         );
+   }
+
    private static int debugReport(FabricClientCommandSource source, SweepController sweep, VoxyMapConfig config, Integer x, Integer z) {
       int rx;
       int rz;
@@ -270,9 +305,17 @@ public final class Cmd {
       source.sendFeedback(Component.literal(message));
    }
 
+   /**
+    * Replies, and mirrors the same lines into the log.
+    *
+    * <p>Chat-only output can only be read back off a screenshot, and chat fades after a few
+    * seconds -- long enough that a shot taken right after the command routinely catches an empty
+    * screen. Anything worth printing at length is worth putting in the log too.
+    */
    public static void replyAll(FabricClientCommandSource source, List<String> lines) {
       for (String line : lines) {
          reply(source, line);
+         Log.info("cmd: " + line);
       }
    }
 }

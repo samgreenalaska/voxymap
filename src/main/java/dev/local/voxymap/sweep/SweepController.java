@@ -5,10 +5,12 @@ import dev.local.voxymap.util.Budget;
 import dev.local.voxymap.util.Log;
 import dev.local.voxymap.util.PerfMonitor;
 import dev.local.voxymap.voxy.ColumnData;
-import dev.local.voxymap.voxy.ColumnScanner;
+import dev.local.voxymap.lod.Backends;
+import dev.local.voxymap.lod.LodBackend;
+import dev.local.voxymap.lod.PaletteWork;
+import dev.local.voxymap.lod.TileScanner;
 import dev.local.voxymap.voxy.PaletteSnapshot;
 import dev.local.voxymap.voxy.SectionIndex;
-import dev.local.voxymap.voxy.VoxySource;
 import dev.local.voxymap.xaero.Diagnostics;
 import dev.local.voxymap.xaero.RegionSession;
 import dev.local.voxymap.xaero.ReclaimPass;
@@ -85,7 +87,7 @@ public final class SweepController {
    }
 
    private final VoxyMapConfig config;
-   private final VoxySource voxy = new VoxySource();
+   private final LodBackend backend;
    private final ReclaimPass reclaim = new ReclaimPass();
    private final Budget budget = new Budget();
    private final PerfMonitor perf = new PerfMonitor();
@@ -94,8 +96,8 @@ public final class SweepController {
    private SweepWorker worker;
    private SectionIndex index;
    private PaletteSnapshot palette;
-   private PaletteSnapshot.Builder paletteBuilder;
-   private ColumnScanner scanner;
+   private PaletteWork paletteBuilder;
+   private TileScanner scanner;
    private boolean paletteIsRefresh;
 
    private TileWriter writer;
@@ -177,8 +179,13 @@ public final class SweepController {
    private long voxySampleAt;
    private double voxyGrowthPerMinute = -1.0;
 
-   public SweepController(VoxyMapConfig config) {
+   public SweepController(VoxyMapConfig config, LodBackend backend) {
       this.config = config;
+      this.backend = backend;
+   }
+
+   public LodBackend backend() {
+      return this.backend;
    }
 
    /** Called once at client init; registers the per-frame timing hooks. */
@@ -256,8 +263,8 @@ public final class SweepController {
             + "model this mod implements would render it wrong. Use --force to override.";
       }
 
-      if (!this.voxy.open(level)) {
-         return "Voxy has no world database for this dimension.";
+      if (!this.backend.open(level)) {
+         return this.backend.kind().display() + " has no LOD database for this dimension.";
       }
 
       this.reauthor = reauthor || this.config.reauthorOwnTiles;
@@ -293,7 +300,7 @@ public final class SweepController {
       this.authored = new AuthoredIndex(mp);
       this.writer = null;
 
-      this.worker = new SweepWorker(this.voxy);
+      this.worker = new SweepWorker(this.backend);
 
       // Only an automatic rescan with a baseline to compare against can take the cheap path; a
       // manual or first sweep needs the column map regardless.
@@ -328,7 +335,7 @@ public final class SweepController {
          this.environmentDumped = true;
       }
 
-      return "Enumerating Voxy's stored sections...";
+      return "Enumerating stored LOD sections...";
    }
 
    // ---------------------------------------------------------------- stopping
@@ -393,7 +400,7 @@ public final class SweepController {
          this.worker = null;
       }
 
-      this.voxy.close();
+      this.backend.close();
       this.index = null;
       this.palette = null;
       this.paletteBuilder = null;
@@ -506,7 +513,7 @@ public final class SweepController {
          return;
       }
 
-      if (!this.voxy.stillValid()) {
+      if (!this.backend.stillValid()) {
          this.abort("the client changed worlds");
          return;
       }
@@ -611,7 +618,7 @@ public final class SweepController {
          return;
       }
 
-      if (VoxySource.peek(mc.level) == null) {
+      if (!this.backend.present(mc.level)) {
          return;
       }
 
@@ -633,7 +640,7 @@ public final class SweepController {
 
       Throwable err = this.worker.error();
       if (err != null) {
-         this.abort("could not read Voxy's section index: " + err);
+         this.abort("could not read the stored section index: " + err);
          return;
       }
 
@@ -642,7 +649,7 @@ public final class SweepController {
          // "nothing changed", and this is the entire cost of a rescan.
          var scanned = this.worker.scan();
          if (scanned == null) {
-            this.abort("Voxy returned no section fingerprints");
+            this.abort("the LOD backend returned no section fingerprints");
             return;
          }
 
@@ -662,7 +669,7 @@ public final class SweepController {
 
       this.index = this.worker.index();
       if (this.index == null) {
-         this.abort("Voxy returned no section index");
+         this.abort("the LOD backend returned no section index");
          return;
       }
 
@@ -685,19 +692,14 @@ public final class SweepController {
          return;
       }
 
-      this.paletteBuilder = PaletteSnapshot.builder(this.voxy.engine(), mp, mp.getWorld());
+      this.paletteBuilder = this.backend.paletteWork(mp, mp.getWorld());
       this.paletteIsRefresh = false;
       this.phase = Phase.PALETTE;
    }
 
-   /** Whether a snapshot still covers everything Voxy's mapper knows about. */
+   /** Whether a snapshot still covers everything the backend can name. */
    private boolean paletteMatches(PaletteSnapshot snapshot) {
-      try {
-         var mapper = this.voxy.engine().getMapper();
-         return mapper.getStateEntries().length == snapshot.blockCount() && mapper.getBiomeEntries().length == snapshot.biomeCount();
-      } catch (Throwable t) {
-         return false;
-      }
+      return this.backend.paletteMatches(snapshot);
    }
 
    private it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap pendingFingerprints;
@@ -775,7 +777,7 @@ public final class SweepController {
 
    private void noteProvisional(int rx, int rz) {
       long key = SectionIndex.regionKey(rx, rz);
-      boolean probed = this.scanner != null && this.scanner.probedSections > 0;
+      boolean probed = this.scanner != null && this.scanner.counters().probed() > 0;
       boolean provisional = this.writer.skippedIncomplete > 0 || probed;
 
       // Any probe that found something means the index did not know about a section that exists,
@@ -1025,12 +1027,16 @@ public final class SweepController {
    }
 
    /**
-    * Tracks how fast Voxy's stored section count is moving.
+    * Tracks how fast the backend's stored section count is moving.
     *
     * <p>"Is Voxy still working?" has come up twice and both times it was answered by eyeballing
     * numbers across log lines. It is the one question this mod is in a position to answer for free
-    * -- it counts Voxy's sections once a second anyway -- so it should just say. A count that is
-    * climbing means Voxy is ingesting; a flat one while you move means it is not.
+    * -- it counts sections once a second anyway -- so it should just say. A count that is climbing
+    * means the database is growing; a flat one while you move means it is not.
+    *
+    * <p>On the Distant Horizons backend the number counts <em>candidates</em> rather than stored
+    * sections, because DH cannot be asked what it holds without reading it. It still answers the
+    * question it is here for -- it climbs as ground streams in -- but it is not a database size.
     */
    private void recordVoxyGrowth(int sections) {
       long now = System.currentTimeMillis();
@@ -1051,11 +1057,13 @@ public final class SweepController {
    }
 
    private String voxyGrowth() {
+      String who = this.backend.kind().display();
+
       if (this.voxySections < 0) {
-         return "voxy: not sampled yet";
+         return who + ": not sampled yet";
       }
 
-      return "voxy: " + this.voxySections + " LOD-0 sections stored"
+      return who + ": " + this.voxySections + " LOD-0 sections"
          + (this.voxyGrowthPerMinute < 0.0
             ? " (measuring the rate...)"
             : String.format(", %+.0f/min over the last %ds", this.voxyGrowthPerMinute, VOXY_GROWTH_WINDOW_MILLIS / 1000L));
@@ -1140,7 +1148,7 @@ public final class SweepController {
       this.cachedPaletteIdentity = this.fingerprintIdentity;
 
       this.writer = new TileWriter(mp, snapshot, this.worldMinY, this.reauthor, this.config.incompleteChunkTolerance);
-      this.scanner = new ColumnScanner(this.voxy.engine(), this.index, snapshot, this.worldMinY, this.worldMaxY, this.config.maxOverlays);
+      this.scanner = this.backend.scanner(this.index, snapshot, this.worldMinY, this.worldMaxY, this.config.maxOverlays);
       this.worker.setScanner(this.scanner);
       this.phase = Phase.RUNNING;
    }
@@ -1188,10 +1196,17 @@ public final class SweepController {
 
             return;
          case APPLYING:
-            if (session.applyStalled()) {
+            // Only a region with something to write can be stalled. A region merely waiting on its
+            // scans is working; on the DH backend a tile chunk is sixteen database reads and that
+            // can outlast the timeout honestly. Nor does a paused sweep count -- the apply stage
+            // is deliberately not running then, and requeueing on that basis would churn every
+            // region in turn while the framerate is low.
+            boolean workWaiting = this.stalled != null || this.worker.queuedResults() > 0 || this.inFlight > 0;
+
+            if (this.pauseReason == null && session.applyStalled(workWaiting)) {
                Log.warn(
                   "r(" + session.regionX + "," + session.regionZ + ") APPLY_STALLED: nothing written in "
-                     + this.config.loadTimeoutSeconds + "s of being the region under the writer; requeuing."
+                     + this.config.loadTimeoutSeconds + "s while work was waiting; requeuing."
                      + " pendingTileChunks=" + this.pendingTileChunks.size()
                      + " inFlight=" + this.inFlight
                      + " queuedResults=" + this.worker.queuedResults()
@@ -1418,9 +1433,10 @@ public final class SweepController {
       if (this.config.paletteRefreshRegions > 0
          && this.regionsDone > 0
          && this.regionsDone % this.config.paletteRefreshRegions == 0
-         && this.voxy.engine().getMapper().getStateEntries().length != this.palette.blockCount()) {
-         // Voxy ingested new blocks while we were running; re-snapshot before continuing.
-         this.paletteBuilder = PaletteSnapshot.builder(this.voxy.engine(), mp, mp.getWorld());
+         && !this.backend.paletteMatches(this.palette)) {
+         // The backend has met blocks the palette does not cover -- Voxy ingesting something new
+         // mid-sweep, or a registry that grew. Re-snapshot before continuing.
+         this.paletteBuilder = this.backend.paletteWork(mp, mp.getWorld());
          this.paletteIsRefresh = true;
          this.phase = Phase.PALETTE;
          return null;
@@ -1621,13 +1637,14 @@ public final class SweepController {
       this.chunksSkippedLoaded += this.writer.skippedLoaded;
 
       if (this.scanner != null) {
-         this.columnsVoid += this.scanner.voidColumns;
-         this.columnsEstimated += this.scanner.estimatedColumns;
-         this.columnsNoData += this.scanner.noDataColumns;
-         this.columnsGap += this.scanner.gapColumns;
-         this.columnsShallow += this.scanner.shallowColumns;
-         this.columnsFilled += this.scanner.filledColumns;
-         this.columnsProbed += this.scanner.probedSections;
+         TileScanner.Counters counters = this.scanner.counters();
+         this.columnsVoid += counters.voided();
+         this.columnsEstimated += counters.estimated();
+         this.columnsNoData += counters.noData();
+         this.columnsGap += counters.gap();
+         this.columnsShallow += counters.shallow();
+         this.columnsFilled += counters.filled();
+         this.columnsProbed += counters.probed();
       }
 
       this.noteProvisional(session.regionX, session.regionZ);
@@ -1662,7 +1679,7 @@ public final class SweepController {
                this.writer.skippedIncomplete,
                this.writer.skippedLoaded,
                this.writer.deferredMissing,
-               this.scanner == null ? 0 : this.scanner.estimatedColumns,
+               this.scanner == null ? 0 : this.scanner.counters().estimated(),
                this.writer.authored + this.writer.existing,
                Math.max(considered, 1),
                session.bufferRebuildNanos / 1_000_000.0,
@@ -1698,7 +1715,8 @@ public final class SweepController {
 
       if (this.writer.authored == 0 && this.writer.existing == 0 && this.writer.skippedLoaded == 0 && this.writer.skippedIncomplete > 0) {
          Log.warn(
-            "r(" + session.regionX + "," + session.regionZ + ") produced nothing: Voxy's vertical data was incomplete for every chunk"
+            "r(" + session.regionX + "," + session.regionZ + ") produced nothing: " + this.backend.kind().display()
+               + "'s vertical data was incomplete for every chunk"
          );
       }
    }
@@ -1754,8 +1772,8 @@ public final class SweepController {
       if (level == null) {
          out.add("world: none");
       } else {
-         var engine = this.voxy.isOpen() ? this.voxy.engine() : VoxySource.peek(level);
-         out.add("voxy engine: " + (engine == null ? "ABSENT for this dimension" : "present"));
+         out.add("lod backend: " + this.backend.kind().display());
+         out.add(this.backend.describe(level));
          out.add("world y range: " + level.getMinY() + " .. " + (level.getMaxY() + 1));
       }
 
@@ -1819,6 +1837,10 @@ public final class SweepController {
       }
 
       out.add(this.perf.summary());
+      // Where the streamed half stands. On a Distant Horizons client this is the line that says
+      // whether distant terrain is arriving at all, which is most of what /voxymap status is for
+      // there -- the map is the second half of the job, not the first.
+      out.add(dev.local.voxymap.client.LodClient.status());
       return out;
    }
 }

@@ -592,7 +592,8 @@ public final class LodStreamer {
 
             try {
                byte[] encoded = SectionCodec.encode(
-                  section,
+                  section.key,
+                  section._unsafeGetRawDataArray(),
                   localId -> globalStateId(blockIdToState, localId),
                   localId -> localId >= 0 && localId < biomeIdToName.length ? biomeIdToName[localId] : ""
                );

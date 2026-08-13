@@ -1,32 +1,28 @@
 package dev.local.voxymap.voxy;
 
-import dev.local.voxymap.util.Log;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
-import java.util.function.BooleanSupplier;
-import me.cortex.voxy.common.world.WorldEngine;
 
 /**
- * One-shot index of which LOD-0 sections Voxy actually has on disk.
+ * Which LOD-0 section columns the backing database has, and the key arithmetic everything shares.
  *
- * <p>The storage backend holds a live iterator open for the whole callback, so the callback must
- * not call back into storage. Folding into the column map is pure arithmetic on a local hash map,
- * so it is safe to do inline -- and worth it: buffering first meant a 380k-entry
- * {@code LongArrayList} (~3 MB, repeatedly grown and copied) allocated on every rescan, plus a
- * second full pass over it. Positions arrive grouped by Y slice rather than by column, but the
- * fold is an OR into a bitset and does not care about order.
+ * <p>The index itself is backend-neutral — a column key to a bitset of the heights present in it —
+ * and so is every static here. What fills it is not: {@link VoxyIndexScan} walks Voxy's storage,
+ * {@link dev.local.voxymap.dh.DhIndex} works from what Distant Horizons can be shown to hold. The
+ * split is not tidiness. Voxy does not load at all on Windows-on-ARM, so anything the DH path
+ * touches has to be free of Voxy's classes or the class loader takes the client down with it.
  */
 public final class SectionIndex {
    /** sy is a signed byte in Voxy's key format; this bitset covers the part any real world uses. */
-   static final int Y_BIAS = 32;
-   private static final int Y_MIN = -32;
-   private static final int Y_MAX = 31;
+   public static final int Y_BIAS = 32;
+   static final int Y_MIN = -32;
+   static final int Y_MAX = 31;
 
    private final Long2LongOpenHashMap columns;
    private final int sectionCount;
    private final int outOfRange;
 
-   private SectionIndex(Long2LongOpenHashMap columns, int sectionCount, int outOfRange) {
+   SectionIndex(Long2LongOpenHashMap columns, int sectionCount, int outOfRange) {
       this.columns = columns;
       this.sectionCount = sectionCount;
       this.outOfRange = outOfRange;
@@ -57,100 +53,75 @@ public final class SectionIndex {
    }
 
    /**
-    * The cheap half of a rescan: per-region content hashes, without building the column map.
+    * Per-region content hashes: the cheap half of a rescan, without building the column map.
     *
-    * <p>Building the map is what costs a second or two -- roughly 480k inserts into an 80k-entry
-    * hash map, allocated fresh each time. The hashes need none of it: XOR of a scrambled position
-    * is order-independent, so it folds into a map with one entry per Xaero region, a few hundred at
-    * most, which stays in cache. In steady state the answer is "nothing changed" and the column map
-    * is never built at all.
+    * <p>Building the map is what costs a second or two. The hashes need none of it: XOR of a
+    * scrambled position is order-independent, so it folds into a map with one entry per Xaero
+    * region, a few hundred at most, which stays in cache. In steady state the answer is "nothing
+    * changed" and the column map is never built at all.
     *
     * <p>Detects sections appearing and disappearing, not a section's contents changing under a
-    * position that already existed -- exactly as the column-based hash it replaces did.
-    *
-    * @param abort see {@link #enumerate}
-    * @return the hashes and how many sections Voxy is storing, or null if the walk was aborted
+    * position that already existed.
     */
    public record FingerprintScan(Long2LongOpenHashMap fingerprints, int sectionCount) {
    }
 
-   public static FingerprintScan scanFingerprints(WorldEngine engine, BooleanSupplier abort) {
-      Long2LongOpenHashMap out = new Long2LongOpenHashMap(512);
-      out.defaultReturnValue(0L);
-      int[] counter = new int[1];
-      boolean[] aborted = new boolean[1];
+   /** Builds an index one section position at a time, for backends that cannot be iterated. */
+   public static final class Builder {
+      private final Long2LongOpenHashMap columns = new Long2LongOpenHashMap(1 << 12);
+      private final Long2LongOpenHashMap fingerprints = new Long2LongOpenHashMap(512);
+      private int sections;
+      private int outOfRange;
 
-      engine.storage.iteratePositions(0, pos -> {
-         if (aborted[0]) {
-            return;
-         }
-
-         if ((counter[0]++ & 0x1FFF) == 0 && abort.getAsBoolean()) {
-            aborted[0] = true;
-            return;
-         }
-
-         int sy = WorldEngine.getY(pos);
-         if (sy < Y_MIN || sy > Y_MAX) {
-            return;
-         }
-
-         long rk = regionKey(WorldEngine.getX(pos) >> 4, WorldEngine.getZ(pos) >> 4);
-         out.put(rk, out.get(rk) ^ scramble(pos * 0x9E3779B97F4A7C15L));
-      });
-
-      return aborted[0] ? null : new FingerprintScan(out, counter[0]);
-   }
-
-   /**
-    * Worker thread only.
-    *
-    * @param abort polled every few thousand positions; when it answers true the walk stops doing
-    *     work and the result is discarded. The iterator itself cannot be broken out of without
-    *     leaving Voxy's storage backend mid-iteration, so this drains it as cheaply as possible
-    *     instead. That matters on disconnect: this is a second or two during which the worker is
-    *     otherwise unable to notice the world has gone and let go of Voxy's engine.
-    */
-   public static SectionIndex enumerate(WorldEngine engine, BooleanSupplier abort) {
-      Long2LongOpenHashMap columns = new Long2LongOpenHashMap(1 << 16);
-      columns.defaultReturnValue(0L);
-      int[] counters = new int[2];
-      boolean[] aborted = new boolean[1];
-
-      engine.storage.iteratePositions(0, pos -> {
-         if (aborted[0]) {
-            return;
-         }
-
-         if ((counters[0] & 0x1FFF) == 0 && abort.getAsBoolean()) {
-            aborted[0] = true;
-            return;
-         }
-
-         counters[0]++;
-         int sy = WorldEngine.getY(pos);
-
-         if (sy < Y_MIN || sy > Y_MAX) {
-            counters[1]++;
-            return;
-         }
-
-         long key = columnKey(WorldEngine.getX(pos), WorldEngine.getZ(pos));
-         columns.put(key, columns.get(key) | 1L << (sy + Y_BIAS));
-      });
-
-      if (aborted[0]) {
-         return null;
+      public Builder() {
+         this.columns.defaultReturnValue(0L);
+         this.fingerprints.defaultReturnValue(0L);
       }
 
-      int count = counters[0];
-      int outOfRange = counters[1];
+      public void add(int sx, int sy, int sz) {
+         if (sy < Y_MIN || sy > Y_MAX) {
+            this.outOfRange++;
+            return;
+         }
 
-      if (outOfRange > 0) {
-         Log.warn(outOfRange + " LOD-0 sections sit outside the supported vertical range and were ignored");
+         this.sections++;
+         long key = columnKey(sx, sz);
+         this.columns.put(key, this.columns.get(key) | 1L << (sy + Y_BIAS));
+
+         long rk = regionKey(sx >> 4, sz >> 4);
+         // The same scramble-and-XOR the Voxy scan uses, over the same section identity, so the
+         // two backends produce fingerprints of the same shape and FingerprintStore cannot tell
+         // them apart -- which is what lets one store serve both.
+         this.fingerprints.put(rk, this.fingerprints.get(rk) ^ scramble(mix(sx, sy, sz) * 0x9E3779B97F4A7C15L));
       }
 
-      return new SectionIndex(columns, count, outOfRange);
+      /**
+       * Folds an extra value into one region's fingerprint.
+       *
+       * <p>For a backend whose data can change without the index changing. Voxy needs none of this
+       * -- a section appearing changes the position set, which changes the hash. Distant Horizons
+       * never says when it has stored a chunk, so the regions it scans for itself are salted with
+       * something that moves when they are worth re-reading. See {@code DhBackend}.
+       */
+      public void salt(long regionKey, long value) {
+         this.fingerprints.put(regionKey, this.fingerprints.get(regionKey) ^ scramble(value));
+      }
+
+      public boolean isEmpty() {
+         return this.sections == 0;
+      }
+
+      public SectionIndex build() {
+         return new SectionIndex(this.columns, this.sections, this.outOfRange);
+      }
+
+      public FingerprintScan fingerprints() {
+         return new FingerprintScan(this.fingerprints, this.sections);
+      }
+
+      private static long mix(int sx, int sy, int sz) {
+         return ((long)sx & 0xFFFFFFL) << 40 | ((long)sz & 0xFFFFFFL) << 16 | (sy & 0xFFL);
+      }
    }
 
    public int sectionCount() {
@@ -195,7 +166,7 @@ public final class SectionIndex {
       return sy >= Y_MIN && sy <= Y_MAX && (ySet & 1L << (sy + Y_BIAS)) != 0L;
    }
 
-   private static long scramble(long v) {
+   static long scramble(long v) {
       v ^= v >>> 33;
       v *= 0xFF51AFD7ED558CCDL;
       v ^= v >>> 33;

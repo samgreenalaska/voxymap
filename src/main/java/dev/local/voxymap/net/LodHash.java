@@ -1,6 +1,5 @@
 package dev.local.voxymap.net;
 
-import me.cortex.voxy.common.world.other.Mapper;
 
 /**
  * Content hashes for streamed LOD, at three scales: section, column, region.
@@ -69,8 +68,8 @@ public final class LodHash {
       long h = FNV_OFFSET;
 
       for (long voxel : data) {
-         int block = Mapper.getBlockId(voxel);
-         int biome = Mapper.getBiomeId(voxel);
+         int block = dev.local.voxymap.lod.Voxel.blockId(voxel);
+         int biome = dev.local.voxymap.lod.Voxel.biomeId(voxel);
 
          int state = block >= 0 && block < blockIdToGlobalState.length ? blockIdToGlobalState[block] : -1;
          int name = biome >= 0 && biome < biomeIdToNameHash.length ? biomeIdToNameHash[biome] : 0;

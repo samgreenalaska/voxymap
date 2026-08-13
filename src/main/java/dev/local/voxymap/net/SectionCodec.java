@@ -1,13 +1,12 @@
 package dev.local.voxymap.net;
 
+import dev.local.voxymap.lod.Voxel;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
-import me.cortex.voxy.common.world.WorldSection;
-import me.cortex.voxy.common.world.other.Mapper;
 
 /**
  * Turns a Voxy section into bytes the other machine can rebuild, and back.
@@ -15,7 +14,7 @@ import me.cortex.voxy.common.world.other.Mapper;
  * <h2>Why a section cannot simply be copied</h2>
  *
  * <p>A voxel is a packed long holding a block id, a biome id and a light value, and those ids are
- * <em>per engine</em>: they are handed out by {@link Mapper} in the order that engine happened to
+ * <em>per engine</em>: Voxy's {@code Mapper} hands them out in the order that engine happened to
  * meet each block. The server's id 41 and the client's id 41 are unrelated. Shipping raw longs
  * would paint one world's terrain with another world's palette.
  *
@@ -33,9 +32,17 @@ import me.cortex.voxy.common.world.other.Mapper;
  *   bytes  deflated voxel data
  * </pre>
  *
- * <p>A section is {@link WorldSection#SECTION_VOLUME} longs -- 256 KB raw -- which is far past what
- * a packet should carry, so the voxel array is deflated. Terrain sections are overwhelmingly
- * repeated values and compress to a small fraction of that; the palettes are a few dozen entries.
+ * <p>A section is {@link Voxel#SECTION_VOLUME} longs -- 256 KB raw -- which is far past what a
+ * packet should carry, so the voxel array is deflated. Terrain sections are overwhelmingly repeated
+ * values and compress to a small fraction of that; the palettes are a few dozen entries.
+ *
+ * <h2>Voxy-free on purpose</h2>
+ *
+ * <p>Neither half of this names a Voxy class, which is what let a Distant Horizons client join an
+ * unchanged server: the bytes were already portable, and the caller supplies the section's key and
+ * raw array rather than the {@code WorldSection} they came out of. The bit layout of a voxel is
+ * mirrored in {@link Voxel}, and must not drift from Voxy's {@code Mapper} -- the encoder is a Voxy
+ * server either way.
  */
 public final class SectionCodec {
    /** Cheap default: fast enough to run on a server tick budget, still an order of magnitude. */
@@ -91,12 +98,11 @@ public final class SectionCodec {
     * @return the encoded section, or null if it held nothing worth sending
     */
    public static byte[] encode(
-      WorldSection section,
+      long key,
+      long[] data,
       java.util.function.IntUnaryOperator blockIdToState,
       java.util.function.IntFunction<String> biomeIdToName
    ) {
-      long[] data = section._unsafeGetRawDataArray();
-
       // Local id -> index in the palette we are about to build. Sized for the worst case rather
       // than grown, because this runs per section on a worker.
       it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap blockSeen = new it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap();
@@ -108,8 +114,8 @@ public final class SectionCodec {
       biomeSeen.defaultReturnValue(-1);
 
       for (long voxel : data) {
-         int block = Mapper.getBlockId(voxel);
-         int biome = Mapper.getBiomeId(voxel);
+         int block = Voxel.blockId(voxel);
+         int biome = Voxel.biomeId(voxel);
 
          if (blockSeen.get(block) < 0) {
             blockSeen.put(block, blockIds.size());
@@ -124,7 +130,7 @@ public final class SectionCodec {
 
       ByteArrayOutputStream out = new ByteArrayOutputStream(8192);
       ByteBuffer header = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
-      header.putLong(section.key);
+      header.putLong(key);
       out.writeBytes(header.array());
 
       writeInt(out, blockIds.size());
@@ -150,13 +156,13 @@ public final class SectionCodec {
       ByteBuffer voxels = ByteBuffer.wrap(raw, 0, rawLength).order(ByteOrder.BIG_ENDIAN);
 
       for (long voxel : data) {
-         int block = blockSeen.get(Mapper.getBlockId(voxel));
-         int biome = biomeSeen.get(Mapper.getBiomeId(voxel));
-         int light = Mapper.getLightId(voxel);
+         int block = blockSeen.get(Voxel.blockId(voxel));
+         int biome = biomeSeen.get(Voxel.biomeId(voxel));
+         int light = Voxel.light(voxel);
 
          // Palette indices are small; packing them the same way Voxy packs real ids keeps the
          // array uniform and therefore compressible.
-         voxels.putLong(Mapper.withLight(Mapper.withBlockBiome(0L, block, biome), light));
+         voxels.putLong(Voxel.pack(block, biome, light));
       }
 
       writeInt(out, rawLength);

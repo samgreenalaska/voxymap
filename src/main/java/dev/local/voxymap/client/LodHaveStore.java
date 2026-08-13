@@ -99,13 +99,24 @@ public final class LodHaveStore {
       return new LodHaveStore(null, "", new Long2LongOpenHashMap(), new Long2LongOpenHashMap());
    }
 
-   /** {@code <voxy saves>/<world id>/voxymap-have.bin}, or null if Voxy's folder is unknown. */
-   public static Path fileFor(Path voxySaveFolder, String worldId) {
-      if (voxySaveFolder == null || worldId == null || worldId.isEmpty()) {
+   /**
+    * {@code <folder>/voxymap-have.bin}, or null if the database's folder is unknown.
+    *
+    * @param folder the directory the store belongs in, which each backend works out for itself --
+    *     Voxy's is {@code <voxy saves>/<world id>}, and Distant Horizons' save folder is already
+    *     per-level so it is used as-is. This used to append the world id here instead, which was
+    *     fine for Voxy's ids and not for DH's: {@code judm58jne6eig@minecraft:overworld} is a
+    *     perfectly good identifier and an illegal Windows path, so every DH client threw
+    *     InvalidPathException at join, declared nothing, and took a full resend.
+    * @param worldId still required, and still checked -- it goes in the header so a store found
+    *     beside the wrong database is discarded rather than believed
+    */
+   public static Path fileFor(Path folder, String worldId) {
+      if (folder == null || worldId == null || worldId.isEmpty()) {
          return null;
       }
 
-      return voxySaveFolder.resolve(worldId).resolve("voxymap-have.bin");
+      return folder.resolve("voxymap-have.bin");
    }
 
    /**
@@ -242,6 +253,25 @@ public final class LodHaveStore {
       }
 
       return before - this.columns.size();
+   }
+
+   /**
+    * A copy of the heights each column arrived at, for a backend that rebuilds an index from this.
+    *
+    * <p>A copy, taken under the same lock {@link #put} holds, because the reader is the sweep
+    * worker and the writer is whichever thread a batch arrived on. Handing out the live map means
+    * iterating it while it is being rehashed, which is a corrupt read or a hang and not an
+    * exception -- the kind of bug that shows up as the map quietly missing a region.
+    */
+   public synchronized Long2LongOpenHashMap heightsSnapshot() {
+      return new Long2LongOpenHashMap(this.heights);
+   }
+
+   /** Drops height records for columns no longer claimed. Pairs with editing {@link #columns()}. */
+   public void retainHeightsForColumns() {
+      if (this.heights.keySet().retainAll(this.columns.keySet())) {
+         this.dirty = true;
+      }
    }
 
    /**

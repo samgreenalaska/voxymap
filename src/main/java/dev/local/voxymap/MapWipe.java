@@ -46,6 +46,7 @@ import xaero.map.world.MapDimension;
 public final class MapWipe {
    private static Path pendingVoxy;
    private static Path pendingOwn;
+   private static Path pendingDhHave;
    private static String pendingLabel;
 
    private MapWipe() {
@@ -90,6 +91,19 @@ public final class MapWipe {
          out.add("  deleted, and it must be: it is the client's claim about which sections it already");
          out.add("  holds. Left behind, the manifest would tell the server you still have everything");
          out.add("  that was just deleted and the server would re-send none of it.");
+      }
+
+      Path dhHave = dhHaveStore();
+
+      if (dhHave != null) {
+         out.add("Streamed-LOD record (DH)    " + describePath(dhHave));
+         out.add("  deleted. Distant Horizons' own terrain database beside it is NOT touched: it is");
+         out.add("  DH's data, it has its own delete button, and this command has no business");
+         out.add("  throwing away gigabytes nobody asked about. The record has to go regardless --");
+         out.add("  it is a claim about what the server already sent, and a claim that outlives the");
+         out.add("  data it describes is what stopped the map refilling in 7.16.");
+         out.add("  So a wipe on a DH client refills the map from what Xaero and DH still hold,");
+         out.add("  rather than from nothing. Use DH's own controls first if you want nothing.");
       }
 
       out.add("");
@@ -148,6 +162,7 @@ public final class MapWipe {
 
       pendingVoxy = voxy;
       pendingOwn = own;
+      pendingDhHave = dhHaveStore();
       pendingLabel = mp.getCurrentWorldId() + " / " + mp.getCurrentDimId() + " / " + mp.getCurrentMWId();
 
       Log.info("wipe armed for [" + pendingLabel + "]; voxy=" + voxy + " own=" + own);
@@ -164,9 +179,11 @@ public final class MapWipe {
       String label = pendingLabel;
       Path voxy = pendingVoxy;
       Path own = pendingOwn;
+      Path dhHave = pendingDhHave;
       pendingLabel = null;
       pendingVoxy = null;
       pendingOwn = null;
+      pendingDhHave = null;
 
       Log.info("wiping [" + label + "]");
 
@@ -178,6 +195,10 @@ public final class MapWipe {
 
       for (Path p : sidecars) {
          deleteFile(p, "VoxyServer's hash sidecar");
+      }
+
+      if (dhHave != null) {
+         deleteFile(dhHave, "the streamed-LOD record inside Distant Horizons' save folder");
       }
 
       // arm() suspended automatic sweeping so nothing would write between confirming and leaving.
@@ -202,6 +223,34 @@ public final class MapWipe {
          MapDimension dim = mp.getMapWorld().getCurrentDimension();
          return dim.getMainFolderPath().resolve(dim.getCurrentMultiworld());
       } catch (Throwable t) {
+         return null;
+      }
+   }
+
+   /**
+    * {@code voxymap-have.bin} inside Distant Horizons' save folder for this level, or null if this
+    * client is not on the DH backend.
+    *
+    * <p>Asked through {@code DhStreamIngest} rather than built from a path guess, so it is the same
+    * file the receiver writes -- two ways of naming one file is how a wipe comes to miss it.
+    */
+   private static Path dhHaveStore() {
+      if (VoxyMapClient.backend() != dev.local.voxymap.lod.Backends.DH) {
+         return null;
+      }
+
+      Minecraft mc = Minecraft.getInstance();
+
+      if (mc.level == null) {
+         return null;
+      }
+
+      try {
+         Path folder = dev.local.voxymap.client.DhStreamIngest.folderFor(mc.level);
+         String worldId = dev.local.voxymap.client.DhStreamIngest.worldIdFor(mc.level);
+         return dev.local.voxymap.client.LodHaveStore.fileFor(folder, worldId);
+      } catch (Throwable t) {
+         Log.warn("could not work out where the streamed-LOD record lives for Distant Horizons", t);
          return null;
       }
    }

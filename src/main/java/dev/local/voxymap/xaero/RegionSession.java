@@ -53,6 +53,9 @@ public final class RegionSession {
 
    /** When this session became the one being written to, or 0 while it is still only a preload. */
    private long writingSince;
+
+   /** When a tile chunk last actually went in. What the stall watchdog measures from. */
+   private long lastAppliedAt;
    private final long createdAt = System.currentTimeMillis();
    private String failure;
 
@@ -363,6 +366,7 @@ public final class RegionSession {
             int wrote = writer.writeTileChunk(tc, data);
             this.tilesAuthored += wrote;
             this.tileChunksApplied++;
+            this.lastAppliedAt = System.currentTimeMillis();
 
             if (wrote > 0) {
                tc.setChanged(true);
@@ -451,22 +455,40 @@ public final class RegionSession {
    }
 
    /**
-    * Whether Xaero has refused every tile chunk for the whole timeout.
+    * Whether Xaero has refused every tile chunk offered for the whole timeout.
     *
-    * <p>Timed from the later of "became the session being written" and "finished loading", so a
-    * region that sat in the preload queue is judged on the time it was actually offered work. It
-    * used to be timed from entry to {@code APPLYING}, which meant a slow region in front of it
-    * could exhaust the timeout on its behalf: the sweep then closed and requeued it before a single
-    * tile chunk was handed over, burnt its three retries the same way, and gave up on it entirely.
-    * That is where the bursts of identical-timestamp warnings came from -- one per parked preload,
-    * drained on consecutive ticks.
+    * <p>Timed from the latest of "became the session being written", "finished loading" and "last
+    * tile chunk actually went in", so a region that sat in the preload queue is judged on the time
+    * it was actually offered work. It used to be timed from entry to {@code APPLYING}, which meant
+    * a slow region in front of it could exhaust the timeout on its behalf: the sweep then closed
+    * and requeued it before a single tile chunk was handed over, burnt its three retries the same
+    * way, and gave up on it entirely. That is where the bursts of identical-timestamp warnings came
+    * from -- one per parked preload, drained on consecutive ticks.
+    *
+    * <h2>Why it no longer gives up once something has been written</h2>
+    *
+    * <p>This used to return false the moment {@code tileChunksApplied != 0}, on the reasoning that
+    * a region which has accepted a tile chunk is evidently working. It is not: Xaero can demote a
+    * region <em>mid-apply</em>. Walk or teleport away and the region stops being visited, loses
+    * {@code beingWritten}, and drops from load state 2 back to 4 — at which point {@link #apply}
+    * refuses every payload, forever, and the watchdog that exists for exactly this was switched off
+    * by the work already done. Observed as a sweep frozen at "regions 4/28" with a full handoff
+    * queue and an apply stage doing 0.00 ms per tick, 16 minutes after the player teleported.
+    *
+    * <p>So progress, not existence of progress, is what resets the clock.
+    *
+    * @param workWaiting whether the sweep actually has something it is trying to write. Without
+    *     this the timeout would fire on a region that is merely waiting for its scans -- which on
+    *     the Distant Horizons backend, where a tile chunk is sixteen database reads, is a normal
+    *     thing to spend time doing.
     */
-   public boolean applyStalled() {
-      if (this.state != State.APPLYING || this.writingSince == 0L || this.tileChunksApplied != 0) {
+   public boolean applyStalled(boolean workWaiting) {
+      if (this.state != State.APPLYING || this.writingSince == 0L || !workWaiting) {
          return false;
       }
 
-      return System.currentTimeMillis() - Math.max(this.writingSince, this.stateSince) > this.loadTimeoutMillis;
+      long since = Math.max(Math.max(this.writingSince, this.stateSince), this.lastAppliedAt);
+      return System.currentTimeMillis() - since > this.loadTimeoutMillis;
    }
 
    /** Applying is finished; hold the region open until its textures have actually uploaded. */

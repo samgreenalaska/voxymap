@@ -1,5 +1,7 @@
 package dev.local.voxymap;
 
+import dev.local.voxymap.lod.Backends;
+import dev.local.voxymap.lod.LodBackend;
 import dev.local.voxymap.sweep.SweepController;
 import dev.local.voxymap.util.Log;
 import net.fabricmc.api.ClientModInitializer;
@@ -16,29 +18,67 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 public final class VoxyMapClient implements ClientModInitializer {
    private static VoxyMapConfig config;
    private static SweepController sweep;
+   private static Backends backend = Backends.NONE;
+
+   /**
+    * Builds the backend, in the one place allowed to name both implementations.
+    *
+    * <p>Kept to a single method with a switch rather than spread around, because each branch loads
+    * the classes of a mod that may not be installed. Anything that touches {@code VoxyBackend} on a
+    * client without Voxy is a {@code NoClassDefFoundError} at the first tick.
+    */
+   private static LodBackend newBackend(Backends kind) {
+      return switch (kind) {
+         case VOXY -> new dev.local.voxymap.voxy.VoxyBackend();
+         case DH -> new dev.local.voxymap.dh.DhBackend(dev.local.voxymap.client.LodClient::heldColumns);
+         case NONE -> null;
+      };
+   }
+
+   public static Backends backend() {
+      return backend;
+   }
 
    @Override
    public void onInitializeClient() {
-      // Both are suggestions rather than requirements as of 0.6, because the same jar now loads on
-      // a dedicated server where neither exists (see VoxyMapServer). On a client without them there
-      // is simply nothing to bridge, and saying so beats a NoClassDefFoundError from the first tick.
-      if (!net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("voxy")
-         || !net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("xaeroworldmap")) {
-         Log.info("voxy or Xaero's World Map is not installed; the map bridge is doing nothing this session");
-         return;
-      }
+      // The ARM buffer-upload workaround, absorbed from the standalone gcarmfix mod. Its mixins
+      // have very likely already run by now -- blaze3d builds its GlDevice before mod initialisers
+      // -- and they load the config themselves for that reason. This call is only so the file
+      // exists and the settings are logged on a machine that never reaches an upload.
+      dev.local.voxymap.armfix.ArmFix.loadConfig();
 
       config = VoxyMapConfig.shared();
       Log.setDebug(config.debug);
       Log.setDiagnostics(config.diagnostics);
-      sweep = new SweepController(config);
+
+      // Which LOD database this client has. Voxy does not run on Windows-on-ARM at all, so this is
+      // not a preference -- on those machines Distant Horizons is the only one there, and every
+      // Voxy class has to stay unloaded. Everything downstream asks Backends rather than testing
+      // for a mod itself.
+      backend = Backends.choose(config.lodBackend);
+
+      if (backend == Backends.NONE) {
+         Log.info("neither voxy nor Distant Horizons is installed; the client half is doing nothing this session");
+         return;
+      }
+
+      // The LOD receiver works with either backend and does not need Xaero at all: on a DH client
+      // it is what puts distant terrain in front of the player, map or no map. Registered before
+      // the Xaero check for exactly that reason, and unconditionally -- a server without the mod
+      // simply never answers the handshake.
+      dev.local.voxymap.client.LodClient.register(backend);
+
+      if (!net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("xaeroworldmap")) {
+         Log.info("Xaero's World Map is not installed; streaming LOD into " + backend.display()
+            + " but not filling any map");
+         ClientTickEvents.END_CLIENT_TICK.register(client -> dev.local.voxymap.client.LodClient.tick());
+         return;
+      }
+
+      sweep = new SweepController(config, newBackend(backend));
       sweep.installPerfHooks();
 
       Cmd.register(sweep, config);
-
-      // Receives LOD from a voxymap server. Registered unconditionally: on a server without the
-      // mod the handshake simply goes unanswered and nothing streams.
-      dev.local.voxymap.client.LodClient.register();
 
       ClientTickEvents.END_CLIENT_TICK.register(client -> {
          try {

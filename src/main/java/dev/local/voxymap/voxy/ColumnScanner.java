@@ -16,7 +16,7 @@ import me.cortex.voxy.common.world.other.Mapper;
  * <p>A section is acquired, copied, and released inside a single call -- never held across
  * anything that could block.
  */
-public final class ColumnScanner {
+public final class ColumnScanner implements dev.local.voxymap.lod.TileScanner {
    /** Xaero folds transparency into a single overlay past this depth; so do we. */
    private static final int MAX_TRANSPARENCY_BLEND_DEPTH = 5;
 
@@ -66,6 +66,7 @@ public final class ColumnScanner {
    /** Sections found by direct probe that the index did not know about. See {@link #probeStack}. */
    public int probedSections;
 
+   @Override
    public void resetCounters() {
       this.voidColumns = 0;
       this.noDataColumns = 0;
@@ -74,6 +75,20 @@ public final class ColumnScanner {
       this.estimatedColumns = 0;
       this.filledColumns = 0;
       this.probedSections = 0;
+   }
+
+   @Override
+   public Counters counters() {
+      return new Counters(
+         this.noDataColumns,
+         this.gapColumns,
+         this.shallowColumns,
+         this.estimatedColumns,
+         this.filledColumns,
+         this.voidColumns,
+         this.probedSections,
+         0
+      );
    }
 
    public ColumnScanner(WorldEngine engine, SectionIndex index, PaletteSnapshot palette, int worldMinY, int worldMaxY, int overlayStride) {
@@ -86,6 +101,7 @@ public final class ColumnScanner {
    }
 
    /** @return the scanned tile chunk, or null if Voxy turned out to have nothing here at all. */
+   @Override
    public ColumnData scanTileChunk(int generation, int tileChunkX, int tileChunkZ) {
       ColumnData out = new ColumnData(generation, tileChunkX, tileChunkZ, this.overlayStride);
       boolean any = false;

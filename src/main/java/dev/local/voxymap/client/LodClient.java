@@ -1,32 +1,21 @@
 package dev.local.voxymap.client;
 
 import dev.local.voxymap.MapWipe;
+import dev.local.voxymap.lod.Backends;
+import dev.local.voxymap.lod.SectionKey;
 import dev.local.voxymap.net.LodProtocol;
 import dev.local.voxymap.net.SectionCodec;
 import dev.local.voxymap.util.Log;
 import dev.local.voxymap.voxy.SectionIndex;
-import dev.local.voxymap.voxy.VoxySource;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.nio.file.Path;
-import me.cortex.voxy.common.voxelization.VoxelizedSection;
-import me.cortex.voxy.common.voxelization.WorldVoxilizedSectionMipper;
-import me.cortex.voxy.common.world.WorldEngine;
-import me.cortex.voxy.common.world.WorldUpdater;
-import me.cortex.voxy.common.world.other.Mapper;
-import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.Holder;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.state.BlockState;
 
 /**
  * Receives LOD sections from a voxymap server and writes them into the client's Voxy database.
@@ -58,6 +47,16 @@ import net.minecraft.world.level.block.state.BlockState;
  * be resolved -- a block from a mod this client lacks -- becomes air rather than something wrong.
  */
 public final class LodClient {
+   /**
+    * Which database arriving sections are written into.
+    *
+    * <p>The wire format does not change with it: a section is a palette of global block-state ids,
+    * a palette of biome names and a packed {@code long[]}, and {@link SectionCodec#decode} names no
+    * Voxy type at all. That is what made a Distant Horizons client possible without touching the
+    * server -- the bytes were already backend-neutral, and only the last step, the insert, was not.
+    */
+   private static Backends backend = Backends.NONE;
+
    private static boolean streaming;
    private static long sectionsReceived;
    private static long sectionsWritten;
@@ -83,7 +82,8 @@ public final class LodClient {
    }
 
    private static Phase phase = Phase.IDLE;
-   private static LodDeclareWorker worker;
+   private static StreamIngest ingest;
+   private static StreamIngest.Declaration worker;
    private static LodHaveStore store = LodHaveStore.detached();
 
    /**
@@ -143,7 +143,28 @@ public final class LodClient {
    private LodClient() {
    }
 
-   public static void register() {
+   /**
+    * @param chosen which database sections go into. Both implementations are named here and
+    *     nowhere else on this path, so a client missing one of the mods never loads its classes.
+    */
+   public static void register(Backends chosen) {
+      backend = chosen;
+      ingest = switch (chosen) {
+         case VOXY -> new VoxyStreamIngest();
+         // Receipts come back asynchronously on this one: a column is held once DH has accepted the
+         // chunks built from it, and anything banked earlier would be recording an intention.
+         case DH -> new DhStreamIngest(LodClient::bankReceipt);
+         case NONE -> null;
+      };
+
+      if (ingest == null) {
+         return;
+      }
+
+      registerReceivers();
+   }
+
+   private static void registerReceivers() {
       ClientPlayNetworking.registerGlobalReceiver(LodProtocol.Ready.TYPE, (payload, context) -> context.client().execute(() -> {
          streaming = payload.accepted();
 
@@ -168,10 +189,9 @@ public final class LodClient {
       ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
          streaming = false;
          announcedFirstBatch = false;
-         verifiedWriteback = false;
+         ingest.reset();
          sectionsReceived = 0;
          sectionsWritten = 0;
-         unresolved = 0;
          declaredRegions = 0;
          detailReplies = 0;
          arrivingHeights.clear();
@@ -204,6 +224,9 @@ public final class LodClient {
          saveStore("disconnecting");
          phase = Phase.IDLE;
          worker = null;
+         // Part-built columns belong to the world that is going away. Anything still queued would
+         // otherwise be built against the next world's level and handed to the wrong database.
+         ingest.reset();
       });
    }
 
@@ -247,6 +270,7 @@ public final class LodClient {
       store = LodHaveStore.detached();
       declaredFor = null;
       worker = null;
+      ingest.reset();
       // Column keys say nothing about which dimension they are in, so in-flight state from the old
       // world would attach itself to whatever column happens to have the same coordinates here.
       arrivingHeights.clear();
@@ -265,12 +289,12 @@ public final class LodClient {
 
       boolean timedOut = System.nanoTime() - joinedAtNanos >= DECLARE_TIMEOUT_NANOS;
 
-      // peek() rather than open(): this is only asking whether there is anything to read yet, and
-      // taking a reference here would be taking one on the client thread, which is the thread Voxy's
-      // shutdown spins on. LodDeclareWorker takes the reference, off-thread, where it is safe.
-      if (VoxySource.peek(mc.level) == null) {
+      // Asked rather than opened: this only wants to know whether there is anything to read yet.
+      // Taking a Voxy reference here would take one on the client thread, which is the thread
+      // Voxy's shutdown spins on. The declare worker takes it off-thread, where it is safe.
+      if (!ingest.ready(mc.level)) {
          if (timedOut) {
-            declareNothing("Voxy has no database for this world yet");
+            declareNothing(backend.display() + " has no database for this world yet");
          }
 
          return;
@@ -280,27 +304,27 @@ public final class LodClient {
       Path folder;
 
       try {
-         worldId = WorldIdentifier.of(mc.level).getWorldId();
-         folder = MapWipe.voxySaveFolder();
+         worldId = ingest.worldId(mc.level);
+         folder = ingest.storeFolder(mc.level);
       } catch (Throwable t) {
-         declareNothing("could not work out which Voxy database this world uses (" + t + ")");
+         declareNothing("could not work out which " + backend.display() + " database this world uses (" + t + ")");
          return;
       }
 
       if (folder == null || worldId == null || worldId.isEmpty()) {
          if (timedOut) {
-            declareNothing("could not work out where Voxy keeps this world");
+            declareNothing("could not work out where " + backend.display() + " keeps this world");
          }
 
          return;
       }
 
-      worker = new LodDeclareWorker(mc.level, folder, worldId);
+      worker = ingest.declare(mc.level, folder, worldId);
       phase = Phase.READING;
    }
 
    private static void tickReading() {
-      LodDeclareWorker w = worker;
+      StreamIngest.Declaration w = worker;
 
       if (w == null) {
          declareNothing("the index walk went missing");
@@ -512,16 +536,12 @@ public final class LodClient {
          return;
       }
 
-      WorldEngine engine = WorldIdentifier.ofEngineNullable(mc.level);
-
-      if (engine == null || !engine.isLive()) {
+      if (ingest == null || !ingest.ready(mc.level)) {
          dropped++;
-         explainOnce("no live Voxy engine on the client (engine=" + (engine == null ? "null" : "not live") + ")");
+         explainOnce("no live " + backend.display() + " database on the client");
          report();
          return;
       }
-
-      Mapper mapper = engine.getMapper();
 
       if (!announcedFirstBatch) {
          announcedFirstBatch = true;
@@ -533,11 +553,17 @@ public final class LodClient {
       for (byte[] raw : payload.sections()) {
          try {
             SectionCodec.Decoded decoded = SectionCodec.decode(raw);
-            write(engine, mapper, mc, decoded);
-            sectionsReceived++;
 
-            long column = SectionIndex.columnKey(WorldEngine.getX(decoded.key()), WorldEngine.getZ(decoded.key()));
-            int sy = WorldEngine.getY(decoded.key());
+            if (!ingest.write(mc.level, decoded)) {
+               anyFailed = true;
+               continue;
+            }
+
+            sectionsReceived++;
+            sectionsWritten++;
+
+            long column = SectionIndex.columnKey(SectionKey.x(decoded.key()), SectionKey.z(decoded.key()));
+            int sy = SectionKey.y(decoded.key());
 
             if (sy >= -32 && sy <= 31) {
                arrivingHeights.put(column, arrivingHeights.get(column) | 1L << (sy + 32));
@@ -556,7 +582,7 @@ public final class LodClient {
          failedColumns.addAll(arrivingHeights.keySet());
       }
 
-      recordReceipts(payload);
+      recordReceipts(mc, payload);
       report();
    }
 
@@ -566,8 +592,13 @@ public final class LodClient {
     * <p>Only ever from the heights that were actually written, and only for a batch nothing went
     * wrong in. This is the single place the client's claim about its own contents grows, and it is
     * deliberately downstream of the insert rather than of the packet.
+    *
+    * <p>"Downstream of the insert" is further away on some backends than others. Voxy holds a
+    * column the moment it is written and says so; Distant Horizons is handed whole chunks built on
+    * a worker, so it banks the receipt itself once it has taken them. Either way the record grows
+    * only from what a database confirmed, never from what a packet claimed.
     */
-   private static void recordReceipts(LodProtocol.Sections payload) {
+   private static void recordReceipts(Minecraft mc, LodProtocol.Sections payload) {
       for (int i = 0; i < payload.doneColumns().length; i++) {
          long column = payload.doneColumns()[i];
          long ySet = arrivingHeights.remove(column);
@@ -578,8 +609,25 @@ public final class LodClient {
             continue;
          }
 
-         store.put(column, payload.doneHashes()[i], ySet);
+         if (ingest.columnComplete(mc.level, column, payload.doneHashes()[i], ySet)) {
+            store.put(column, payload.doneHashes()[i], ySet);
+         }
       }
+   }
+
+   /** Called by a backend that finishes a column later than the packet that carried it. */
+   private static void bankReceipt(long columnKey, long hash, long ySet) {
+      store.put(columnKey, hash, ySet);
+   }
+
+   /**
+    * What this client holds, for the DH backend to build a sweep index out of.
+    *
+    * <p>Called from the sweep worker, so it is a snapshot rather than the live map -- see
+    * {@link LodHaveStore#heightsSnapshot}.
+    */
+   public static Long2LongOpenHashMap heldColumns() {
+      return store.heightsSnapshot();
    }
 
    /** Periodic summary, called from every path so a stall still reports itself. */
@@ -589,125 +637,6 @@ public final class LodClient {
       if (now - lastReportNanos >= REPORT_EVERY_NANOS) {
          lastReportNanos = now;
          Log.info(status());
-      }
-   }
-
-   private static void write(WorldEngine engine, Mapper mapper, Minecraft mc, SectionCodec.Decoded decoded) {
-      int[] blockIds = new int[decoded.blockStateIds().length];
-
-      for (int i = 0; i < blockIds.length; i++) {
-         BlockState state = Block.BLOCK_STATE_REGISTRY.byId(decoded.blockStateIds()[i]);
-
-         if (state == null) {
-            unresolved++;
-            blockIds[i] = 0;
-         } else {
-            blockIds[i] = mapper.getIdForBlockState(state);
-         }
-      }
-
-      int[] biomeIds = new int[decoded.biomeNames().length];
-      var biomes = mc.level.registryAccess().lookupOrThrow(Registries.BIOME);
-
-      for (int i = 0; i < biomeIds.length; i++) {
-         String name = decoded.biomeNames()[i];
-         Holder<Biome> holder = null;
-
-         if (name != null && !name.isEmpty()) {
-            Identifier location = Identifier.tryParse(name);
-
-            if (location != null) {
-               holder = biomes.get(ResourceKey.create(Registries.BIOME, location)).orElse(null);
-            }
-         }
-
-         if (holder == null) {
-            unresolved++;
-            biomeIds[i] = 0;
-         } else {
-            biomeIds[i] = mapper.getIdForBiome(holder);
-         }
-      }
-
-      // Translate the whole 32^3 stack into this client's ids first. Same maths as before; only
-      // the destination changed.
-      long[] source = decoded.voxels();
-      long[] translated = new long[source.length];
-
-      for (int i = 0; i < source.length; i++) {
-         long voxel = source[i];
-         int block = Mapper.getBlockId(voxel);
-         int biome = Mapper.getBiomeId(voxel);
-         int light = Mapper.getLightId(voxel);
-
-         translated[i] = Mapper.withLight(
-            Mapper.withBlockBiome(
-               0L,
-               block >= 0 && block < blockIds.length ? blockIds[block] : 0,
-               biome >= 0 && biome < biomeIds.length ? biomeIds[biome] : 0
-            ),
-            light
-         );
-      }
-
-      // Insert through Voxy's own pipeline instead of writing the raw array.
-      //
-      // Poking _unsafeGetRawDataArray() and marking dirty populates LOD level 0 and NOTHING ELSE.
-      // Voxy's renderer is hierarchical: it descends a quadtree from coarse nodes, and levels 1..4
-      // are what it draws everything beyond the innermost ring from. With those empty, streamed
-      // ground rendered only in the small band where level 0 is used directly -- about 8 chunks,
-      // against a configured render distance of 7 x 512 blocks. The map was right the whole time
-      // because the map reads the database, which had the level-0 data all along.
-      //
-      // VoxelIngestService.processJob is the reference: convert, then mipSection, then
-      // WorldUpdater.insertUpdate. The mip step is the one that was missing.
-      //
-      // A VoxelizedSection is a 16^3 unit (level 0 occupies indices 0..4095), so one streamed 32^3
-      // section is eight of them. Reused across the eight rather than reallocated, the way Voxy's
-      // own ingest keeps one per thread.
-      int sx = WorldEngine.getX(decoded.key());
-      int sy = WorldEngine.getY(decoded.key());
-      int sz = WorldEngine.getZ(decoded.key());
-
-      VoxelizedSection scratch = VoxelizedSection.createEmpty();
-
-      for (int oct = 0; oct < 8; oct++) {
-         int ox = (oct & 1) * 16;
-         int oy = ((oct >> 1) & 1) * 16;
-         int oz = ((oct >> 2) & 1) * 16;
-
-         scratch.zero();
-         int nonAir = 0;
-
-         for (int y = 0; y < 16; y++) {
-            for (int z = 0; z < 16; z++) {
-               for (int x = 0; x < 16; x++) {
-                  // WorldSection.getIndex is (y<<10)|(z<<5)|x over 32^3; VoxelizedSection level 0
-                  // is (y<<8)|(z<<4)|x over 16^3. Same Y-major order, different edge length.
-                  long v = translated[((oy + y) << 10) | ((oz + z) << 5) | (ox + x)];
-                  scratch.section[(y << 8) | (z << 4) | x] = v;
-
-                  if (Mapper.getBlockId(v) != 0) {
-                     nonAir++;
-                  }
-               }
-            }
-         }
-
-         scratch.lvl0NonAirCount = nonAir;
-         // Chunk-section coordinates: 16-block units, so twice the 32-block section index.
-         scratch.setPosition((sx << 1) | (ox >> 4), (sy << 1) | (oy >> 4), (sz << 1) | (oz >> 4));
-
-         WorldVoxilizedSectionMipper.mipSection(scratch, mapper);
-         WorldUpdater.insertUpdate(engine, scratch);
-      }
-
-      sectionsWritten++;
-
-      if (!verifiedWriteback) {
-         verifiedWriteback = true;
-         Log.info("first streamed section inserted through the mip pipeline: key=" + decoded.key()
-            + " section=" + sx + "," + sy + "," + sz + " voxel[0]=" + (translated.length > 0 ? translated[0] : 0L));
       }
    }
 
@@ -722,6 +651,7 @@ public final class LodClient {
          + " dropped=" + dropped
          + " received=" + sectionsReceived
          + " written=" + sectionsWritten
-         + " unresolvedPaletteEntries=" + unresolved;
+         + " into=" + backend.display()
+         + (ingest == null ? "" : ingest.status());
    }
 }

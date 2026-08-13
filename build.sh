@@ -68,11 +68,23 @@ if [ -f "$OUT" ]; then
    exit 1
 fi
 
-rm -rf build/classes
-mkdir -p build/classes dist
+# Intermediates go to a scratch directory on local disk, not next to the sources.
+#
+# This tree is often a network share (it is on the machine this was written on), and javac
+# creating a few hundred package directories on one is both slow and unreliable: after the old
+# output is deleted, the directory it is about to recreate can still be mid-teardown, and javac
+# fails with "error while writing <Class>" naming whichever class lost the race. That reads as a
+# compile error and is not one. A retry papered over it and still lost roughly one build in three.
+#
+# mktemp -d lands on local disk on every platform this runs on, including Git Bash on Windows,
+# and the trap takes it away again. Only the finished jar touches the share.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+CLASSES="$WORK/classes"
+mkdir -p "$CLASSES" dist
 
-find src/main/java -name '*.java' > build/sources.txt
-echo "compiling $(wc -l < build/sources.txt) sources"
+find src/main/java -name '*.java' > "$WORK/sources.txt"
+echo "compiling $(wc -l < "$WORK/sources.txt") sources"
 
 "$JAVAC" \
   --release 25 \
@@ -80,18 +92,34 @@ echo "compiling $(wc -l < build/sources.txt) sources"
   -Xlint:-options \
   -nowarn \
   -cp "$CP" \
-  -d build/classes \
-  @build/sources.txt
+  -d "$CLASSES" \
+  @"$WORK/sources.txt"
 
-cp -r src/main/resources/. build/classes/
+cp -r src/main/resources/. "$CLASSES/"
 
-cat > build/manifest.mf <<'EOF'
+# Fabric-Mapping-Namespace says which namespace the classes in here are written against, and it
+# has to say "intermediary" -- the namespace Loader runs in -- even though these classes are
+# compiled against official names.
+#
+# That is not a contradiction in 26.2: intermediary IS the identity mapping (mappings.tiny is a
+# 25-byte header and nothing else), so official and intermediary name every member identically.
+# Both values describe the same bytes.
+#
+# They do not produce the same behaviour, though. Declaring "official" tells Loader the mod is in
+# a namespace other than the one it runs in, which switches on the runtime remapper -- and that
+# changes how Knot builds its class path. Under Loader 0.19.3 the result was a second copy of the
+# mixin library inside Knot, so every OTHER mod's mixin plugin then failed to cast to the app
+# copy of IMixinConfigPlugin, and the client died during mod init with ~80 ClassCastExceptions
+# naming mods that have nothing to do with this one. Dropping this jar into an instance was enough
+# to break it; taking it out fixed it. Declaring the namespace Loader is already in means no
+# remap, no second class path, no split.
+cat > "$WORK/manifest.mf" <<'EOF'
 Manifest-Version: 1.0
-Fabric-Mapping-Namespace: official
+Fabric-Mapping-Namespace: intermediary
 EOF
 
 rm -f "$OUT"
-"$JAR" --create --file "$OUT" --manifest build/manifest.mf -C build/classes .
+"$JAR" --create --file "$OUT" --manifest "$WORK/manifest.mf" -C "$CLASSES" .
 
 echo "built $OUT"
 ls -la "$OUT"

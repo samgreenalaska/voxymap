@@ -1,14 +1,13 @@
 package dev.local.voxymap.sweep;
 
 import dev.local.voxymap.util.Log;
+import dev.local.voxymap.lod.LodBackend;
+import dev.local.voxymap.lod.TileScanner;
 import dev.local.voxymap.voxy.ColumnData;
-import dev.local.voxymap.voxy.ColumnScanner;
 import dev.local.voxymap.voxy.SectionIndex;
-import dev.local.voxymap.voxy.VoxySource;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
-import me.cortex.voxy.common.world.WorldEngine;
 
 /**
  * The one extra thread this mod adds. It owns every read of Voxy's storage.
@@ -17,10 +16,11 @@ import me.cortex.voxy.common.world.WorldEngine;
  * tile chunks, the worker blocks on the offer and stops reading Voxy, which in turn stops the
  * whole sweep from running ahead of what the client can absorb.
  *
- * <p>It also owns letting go of Voxy on disconnect. Voxy's shutdown spins the render thread until
- * every engine reference is gone, so the release cannot come from the client tick -- see
- * {@link VoxySource}. Checking between units of work is the natural place: this thread is the only
- * one that reads Voxy's storage, so once it has stopped, nothing else can.
+ * <p>It also owns letting go of the backend on disconnect. Voxy's shutdown spins the render thread
+ * until every engine reference is gone, so the release cannot come from the client tick -- see
+ * {@code VoxySource}. Checking between units of work is the natural place: this thread is the only
+ * one that reads the LOD database, so once it has stopped, nothing else can. The DH backend has
+ * nothing to release and answers the same calls harmlessly.
  */
 public final class SweepWorker {
    private static final int REQUEST_CAPACITY = 4;
@@ -33,7 +33,7 @@ public final class SweepWorker {
    public record Result(int generation, ColumnData data) {
    }
 
-   private final VoxySource voxy;
+   private final LodBackend backend;
    private final Thread thread;
 
    private final BlockingQueue<Request> requests = new ArrayBlockingQueue<>(REQUEST_CAPACITY);
@@ -41,7 +41,7 @@ public final class SweepWorker {
 
    private volatile boolean running = true;
    private volatile int generation;
-   private volatile ColumnScanner scanner;
+   private volatile TileScanner scanner;
 
    private volatile boolean enumerateRequested;
    private volatile boolean fingerprintsOnly;
@@ -49,8 +49,8 @@ public final class SweepWorker {
    private volatile SectionIndex.FingerprintScan scan;
    private volatile Throwable error;
 
-   public SweepWorker(VoxySource voxy) {
-      this.voxy = voxy;
+   public SweepWorker(LodBackend backend) {
+      this.backend = backend;
       this.thread = new Thread(this::loop, "voxymap-sweep");
       this.thread.setDaemon(true);
       this.thread.setPriority(Thread.NORM_PRIORITY - 2);
@@ -85,7 +85,7 @@ public final class SweepWorker {
       return this.enumerateRequested;
    }
 
-   public void setScanner(ColumnScanner scanner) {
+   public void setScanner(TileScanner scanner) {
       this.scanner = scanner;
    }
 
@@ -129,14 +129,13 @@ public final class SweepWorker {
          try {
             // Between units of work, so no WorldSection is held and nothing below will touch
             // Voxy's storage again once the reference is gone.
-            if (this.voxy.releaseIfLevelGone()) {
+            if (this.backend.releaseIfLevelGone()) {
                this.running = false;
                this.enumerateRequested = false;
                return;
             }
 
-            WorldEngine engine = this.voxy.engine();
-            if (engine == null) {
+            if (!this.backend.stillValid()) {
                this.enumerateRequested = false;
                Thread.sleep(50L);
                continue;
@@ -144,17 +143,17 @@ public final class SweepWorker {
 
             if (this.enumerateRequested) {
                try {
-                  java.util.function.BooleanSupplier abort = () -> !this.running || this.voxy.levelGone();
+                  java.util.function.BooleanSupplier abort = () -> !this.running || this.backend.levelGone();
 
                   if (this.fingerprintsOnly) {
-                     this.scan = SectionIndex.scanFingerprints(engine, abort);
+                     this.scan = this.backend.scanFingerprints(abort);
                   } else {
-                     this.index = SectionIndex.enumerate(engine, abort);
-                     this.scan = SectionIndex.scanFingerprints(engine, abort);
+                     this.index = this.backend.enumerate(abort);
+                     this.scan = this.backend.scanFingerprints(abort);
                   }
                } catch (Throwable t) {
                   this.error = t;
-                  Log.warn("enumerating Voxy's LOD-0 sections failed", t);
+                  Log.warn("enumerating stored LOD sections failed", t);
                } finally {
                   this.enumerateRequested = false;
                }
@@ -167,7 +166,7 @@ public final class SweepWorker {
                continue;
             }
 
-            ColumnScanner sc = this.scanner;
+            TileScanner sc = this.scanner;
             if (sc == null || request.generation() != this.generation) {
                continue;
             }
@@ -193,7 +192,7 @@ public final class SweepWorker {
                   break;
                }
 
-               if (this.voxy.releaseIfLevelGone()) {
+               if (this.backend.releaseIfLevelGone()) {
                   this.running = false;
                   return;
                }
