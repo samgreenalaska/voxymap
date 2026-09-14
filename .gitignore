@@ -20,5 +20,4 @@
 #   reference/  decompiled Voxy and Xaero sources, third-party, not ours to publish
 #   libs/       third-party jars, resolved at build time
 #   dist/       build output
-#   benchmark.md  measurement notes, names the private lab machines and dashboard
 #   internal dev notes, test-harness notes, server setup notes, scripts/diag.ps1
