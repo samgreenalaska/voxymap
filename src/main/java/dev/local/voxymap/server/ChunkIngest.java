@@ -28,8 +28,18 @@ public final class ChunkIngest {
     * RocksDB open attempt on the server thread. That is how a bad path stopped being a warning and
     * became a 60-second tick and a watchdog kill. A world that cannot be opened once will not open
     * on the next chunk either; give up on it and let the server run without LOD.
+    *
+    * <p>Static and concurrent because {@link LodStreamer} must read it too. When world creation
+    * throws, Voxy's {@code getOrCreate} still holds its write lock (no try/finally), so every later
+    * {@code getNullable} on that instance blocks forever. In 0.10.0 the streamer called it anyway,
+    * and the server thread parked there until the watchdog killed it (26.3, 2026-11-17).
     */
-   private final java.util.Set<String> broken = new java.util.HashSet<>();
+   private static final java.util.Set<String> broken = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+   /** True when this world's LOD storage failed to open; Voxy must not be asked about it again. */
+   public static boolean isBroken(String worldId) {
+      return broken.contains(worldId);
+   }
 
    private long ingested;
    private long skipped;
@@ -60,7 +70,7 @@ public final class ChunkIngest {
 
       WorldIdentifier id = WorldIdentifier.of(level);
 
-      if (this.broken.contains(id.getWorldId())) {
+      if (broken.contains(id.getWorldId())) {
          this.skipped++;
          return;
       }
@@ -75,7 +85,7 @@ public final class ChunkIngest {
       try {
          engine = instance.getOrCreate(id);
       } catch (Throwable t) {
-         this.broken.add(id.getWorldId());
+         broken.add(id.getWorldId());
          Log.error("LOD storage for " + id.getWorldId() + " could not be opened; LOD is off for this world", t);
          return;
       }

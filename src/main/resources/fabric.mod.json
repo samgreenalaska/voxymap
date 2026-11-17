@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "voxymap",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "name": "VoxyMap",
   "description": "Projects stored LOD voxel data -- Voxy's, or Distant Horizons' where Voxy cannot run -- onto Xaero's World Map, filling in regions you have never walked through, and generates world chunks passively on the server so there is terrain to project. Never overwrites genuinely scanned tiles.",
   "authors": [

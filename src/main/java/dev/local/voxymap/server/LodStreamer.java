@@ -422,6 +422,14 @@ public final class LodStreamer {
    private void streamTo(me.cortex.voxy.commonImpl.VoxyInstance instance, ServerPlayer player, PlayerState state) {
       ServerLevel level = player.level();
       WorldIdentifier id = WorldIdentifier.of(level);
+
+      // Must come before any call into the instance: see ChunkIngest.broken for why asking Voxy
+      // about a world that failed to open hangs the server thread.
+      if (ChunkIngest.isBroken(id.getWorldId())) {
+         this.explainOnce("LOD storage for " + id.getWorldId() + " failed to open; not streaming it");
+         return;
+      }
+
       WorldEngine engine = instance.getNullable(id);
 
       if (engine == null || !engine.isLive()) {
