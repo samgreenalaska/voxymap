@@ -1,6 +1,6 @@
 package dev.local.voxymap.armfix.mixin;
 
-import com.mojang.blaze3d.opengl.BufferStorage;
+import com.mojang.renderpearl.backend.opengl.BufferStorage;
 import dev.local.voxymap.armfix.ArmFix;
 import org.lwjgl.opengl.GLCapabilities;
 import org.spongepowered.asm.mixin.Mixin;
@@ -41,7 +41,7 @@ public class BufferStorageMixin {
     private static boolean reported;
 
     @Redirect(
-            method = "create(Lorg/lwjgl/opengl/GLCapabilities;Ljava/util/Set;)Lcom/mojang/blaze3d/opengl/BufferStorage;",
+            method = "create(Lorg/lwjgl/opengl/GLCapabilities;Ljava/util/Set;Z)Lcom/mojang/renderpearl/backend/opengl/BufferStorage;",
             at = @At(
                     value = "FIELD",
                     opcode = GETFIELD,

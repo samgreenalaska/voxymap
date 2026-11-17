@@ -1,6 +1,6 @@
 # VoxyMap
 
-Fabric mod for Minecraft 26.2. Projects stored LOD voxel data onto
+Fabric mod for Minecraft 26.3. Projects stored LOD voxel data onto
 [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map), so the map fills in with terrain
 you've seen from a distance but never actually walked through. It never touches a tile Xaero
 scanned for real. If Xaero later re-scans ground this mod filled in, Xaero's version wins.
@@ -30,10 +30,10 @@ draw from.
 ## Requirements
 
 - Fabric Loader, Fabric API, Java 25
-- A LOD backend on the client: [Voxy](https://modrinth.com/mod/voxy) 0.2.18-beta **or**
-  [Distant Horizons](https://modrinth.com/mod/distanthorizons) 3.2.x. Where both are installed Voxy
+- A LOD backend on the client: [Voxy](https://modrinth.com/mod/voxy) 0.2.20-beta **or**
+  [Distant Horizons](https://modrinth.com/mod/distanthorizons) 3.3.x. Where both are installed Voxy
   is used; `lodBackend` in the config pins it either way.
-- [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.44.x for the map half. Without
+- [Xaero's World Map](https://modrinth.com/mod/xaeros-world-map) 1.47.x for the map half. Without
   it the mod still streams LOD into your backend, it just doesn't fill a map.
 - None of these are hard dependencies. The same jar loads on a dedicated server where none of them
   exist.
@@ -113,24 +113,24 @@ Config lives in `config/voxymap.json`.
 bash build.sh
 ```
 
-Plain `javac` + `jar`, no Gradle or Loom. 26.2's intermediary mapping is the identity mapping, so
+Plain `javac` + `jar`, no Gradle or Loom. 26.3's intermediary mapping is the identity mapping, so
 there's no remap step. `build.sh` needs a JDK 25 on `PATH` (or `JAVA_HOME`) and a set of
 dependency jars to compile against, all dropped into a `deps/` folder next to `build.sh` (or
 pointed to with `VOXYMAP_DEPS_DIR`):
 
-- The Minecraft 26.2 client jar and its libraries
-- `voxy-0.2.18-beta.jar`
-- `DistantHorizons-3.2.0-b-26.2-fabric-neoforge.jar`
-- `xaeroworldmap-fabric-26.2-1.44.2.jar`
-- `sodium-fabric-0.9.1+mc26.2.jar`
-- The Fabric API submodules: `fabric-api-base-2.0.4+ece063239e.jar`,
-  `fabric-command-api-v2-3.1.0+00cb03469e.jar`, `fabric-lifecycle-events-v1-4.1.3+4575b05f9e.jar`,
-  `fabric-networking-api-v1-6.3.3+72073ef09e.jar`, `fabric-rendering-v1-25.3.1+6988455e9e.jar`
-- `xaerolib-fabric-26.2-1.7.1.jar`, jar-in-jar'd inside Xaero's World Map. Pull it out with
-  `unzip -o -j xaeroworldmap-fabric-26.2-1.44.2.jar 'META-INF/jars/xaerolib-*.jar' -d deps`
-- `sponge-mixin-0.17.3+mixin.0.8.7.jar` and LWJGL's `lwjgl-opengl`. Only the ARM fix's two mixins
+- The Minecraft 26.3 client jar and its libraries
+- `voxy-0.2.20-beta.jar`
+- `DistantHorizons-3.3.4-26.3-fabric-neoforge.jar`
+- `xaeroworldmap-fabric-26.3-1.47.2.jar`
+- `sodium-fabric-0.9.2+mc26.3.jar`
+- The Fabric API submodules: `fabric-api-base-2.0.6+fcdff87f5d.jar`,
+  `fabric-command-api-v2-3.1.2+fcdff87f5d.jar`, `fabric-lifecycle-events-v1-4.1.9+ffef5f675d.jar`,
+  `fabric-networking-api-v1-6.4.1+c58129785d.jar`, `fabric-rendering-v1-27.3.1+28694c565d.jar`
+- `xaerolib-fabric-26.3-1.8.5.jar`, jar-in-jar'd inside Xaero's World Map. Pull it out with
+  `unzip -o -j xaeroworldmap-fabric-26.3-1.47.2.jar 'META-INF/jars/xaerolib-*.jar' -d deps`
+- `sponge-mixin-0.17.5+mixin.0.8.7.jar` and LWJGL's `lwjgl-opengl`. Only the ARM fix's two mixins
   need these, and both ship with any Fabric install (Prism keeps them under `libraries/`). No
-  annotation processor and no refmap: the mixins target `com.mojang.blaze3d`, which Mojang does not
+  annotation processor and no refmap: the mixins target `com.mojang.renderpearl` (blaze3d's OpenGL backend, moved there in 26.3), which Mojang does not
   obfuscate, so the names are the same in every namespace.
 
 Intermediates are compiled to a scratch directory on local disk rather than beside the sources.

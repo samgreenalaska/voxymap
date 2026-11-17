@@ -1,7 +1,7 @@
 package dev.local.voxymap.armfix.mixin;
 
-import com.mojang.blaze3d.opengl.GlStateManager;
-import com.mojang.blaze3d.opengl.GlUtil;
+import com.mojang.renderpearl.backend.opengl.GlStateManager;
+import com.mojang.renderpearl.backend.opengl.GlUtil;
 import dev.local.voxymap.armfix.ArmFix;
 import dev.local.voxymap.armfix.UploadTracer;
 import org.spongepowered.asm.mixin.Mixin;
@@ -17,15 +17,15 @@ import java.nio.ByteBuffer;
  *
  * <pre>
  * org.lwjgl.opengl.GL15C.nglBufferSubData
- * com.mojang.blaze3d.opengl.DirectStateAccess$Emulated.bufferSubData   &lt;- here
- * com.mojang.blaze3d.opengl.GlCommandEncoder.writeToBuffer
+ * com.mojang.renderpearl.backend.opengl.DirectStateAccess$Emulated.bufferSubData   &lt;- here
+ * com.mojang.renderpearl.backend.opengl.GlCommandEncoder.writeToBuffer
  * com.mojang.blaze3d.systems.CommandEncoder.writeToBuffer
  * </pre>
  *
  * <p>{@code Emulated} is package-private, hence {@code targets}. blaze3d is not obfuscated, so the
  * names here are the real ones in every namespace and no refmap is required.
  */
-@Mixin(targets = "com.mojang.blaze3d.opengl.DirectStateAccess$Emulated", remap = false)
+@Mixin(targets = "com.mojang.renderpearl.backend.opengl.DirectStateAccess$Emulated", remap = false)
 public abstract class EmulatedBufferUploadMixin {
 
     @Inject(
@@ -55,7 +55,7 @@ public abstract class EmulatedBufferUploadMixin {
             method = "bufferSubData(IJLjava/nio/ByteBuffer;I)V",
             at = @At(
                     value = "INVOKE",
-                    target = "Lcom/mojang/blaze3d/opengl/GlUtil;selectBufferBindTarget(I)I"))
+                    target = "Lcom/mojang/renderpearl/backend/opengl/GlUtil;selectBufferBindTarget(I)I"))
     private int voxymap$chooseBindTarget(int usage) {
         int target = GlUtil.selectBufferBindTarget(usage);
         if (target != ArmFix.GL_COPY_WRITE_BUFFER || !ArmFix.retargetEnabled() || !ArmFix.active()) {
@@ -75,7 +75,7 @@ public abstract class EmulatedBufferUploadMixin {
             method = "bufferSubData(IJLjava/nio/ByteBuffer;I)V",
             at = @At(
                     value = "INVOKE",
-                    target = "Lcom/mojang/blaze3d/opengl/GlStateManager;_glBufferSubData(IJLjava/nio/ByteBuffer;)V"))
+                    target = "Lcom/mojang/renderpearl/backend/opengl/GlStateManager;_glBufferSubData(IJLjava/nio/ByteBuffer;)V"))
     private void voxymap$splitUpload(int target, long offset, ByteBuffer data) {
         int length = data.remaining();
         int chunk = ArmFix.chunkBytes();

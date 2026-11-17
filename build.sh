@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build script for voxymap. Plain javac + jar -- no Loom.
 #
-# Intermediary for 26.2 is the identity mapping (mappings.tiny is a 25-byte
+# Intermediary for 26.3 is the identity mapping (mappings.tiny is a 25-byte
 # header only), so the runtime namespace IS official and no remap step exists.
 # We compile straight against the runtime jars and mark the output
 # Fabric-Mapping-Namespace: official so Loader skips remapping.
@@ -16,7 +16,7 @@ case "$(uname -s)" in
   *) SEP=':' ;;
 esac
 
-# Dependency jars: the Minecraft 26.2 client jar and its libraries, voxy, xaeroworldmap, sodium,
+# Dependency jars: the Minecraft 26.3 client jar and its libraries, voxy, xaeroworldmap, sodium,
 # the Fabric API submodule jars, and xaerolib (see README for exact versions and where to get
 # each one). Either point VOXYMAP_CLASSPATH at an already-assembled classpath, or drop every jar
 # into one directory (default ./deps, override with VOXYMAP_DEPS_DIR) and this globs it.
@@ -26,8 +26,8 @@ else
   DEPS="${VOXYMAP_DEPS_DIR:-deps}"
   [ -d "$DEPS" ] || {
     echo "!! dependency jar directory not found: $DEPS" >&2
-    echo "   put the Minecraft 26.2 client jar + its libraries, voxy-0.2.18-beta.jar," >&2
-    echo "   xaeroworldmap-fabric-26.2-1.44.2.jar, sodium-fabric-0.9.1+mc26.2.jar, the Fabric" >&2
+    echo "   put the Minecraft 26.3 client jar + its libraries, voxy-0.2.20-beta.jar," >&2
+    echo "   xaeroworldmap-fabric-26.3-1.47.2.jar, sodium-fabric-0.9.2+mc26.3.jar, the Fabric" >&2
     echo "   API submodule jars, and xaerolib (see README) in $DEPS/, or set VOXYMAP_DEPS_DIR" >&2
     exit 1
   }
@@ -101,7 +101,7 @@ cp -r src/main/resources/. "$CLASSES/"
 # has to say "intermediary" -- the namespace Loader runs in -- even though these classes are
 # compiled against official names.
 #
-# That is not a contradiction in 26.2: intermediary IS the identity mapping (mappings.tiny is a
+# That is not a contradiction in 26.3: intermediary IS the identity mapping (mappings.tiny is a
 # 25-byte header and nothing else), so official and intermediary name every member identically.
 # Both values describe the same bytes.
 #

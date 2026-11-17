@@ -204,9 +204,9 @@ public final class ArmFix {
 
     private static String queryRenderer() {
         try {
-            return com.mojang.blaze3d.opengl.GlStateManager._getString(GL_VENDOR)
-                    + " | " + com.mojang.blaze3d.opengl.GlStateManager._getString(GL_RENDERER)
-                    + " | " + com.mojang.blaze3d.opengl.GlStateManager._getString(GL_VERSION);
+            return com.mojang.renderpearl.backend.opengl.GlStateManager._getString(GL_VENDOR)
+                    + " | " + com.mojang.renderpearl.backend.opengl.GlStateManager._getString(GL_RENDERER)
+                    + " | " + com.mojang.renderpearl.backend.opengl.GlStateManager._getString(GL_VERSION);
         } catch (Throwable t) {
             return "<query failed: " + t + ">";
         }
