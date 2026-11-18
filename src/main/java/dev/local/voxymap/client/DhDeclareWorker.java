@@ -94,7 +94,10 @@ public final class DhDeclareWorker {
                   return;
                }
 
-               if ((i & 0x3F) == 0 && System.nanoTime() >= deadline) {
+               // Every column, not every 64th: a confirm is four chunk reads, and a cold section
+               // can take long enough that 64 of them overran LodClient's 30 s declare timeout,
+               // which throws the whole declaration away.
+               if (System.nanoTime() >= deadline) {
                   break;
                }
 

@@ -130,11 +130,60 @@ public final class DhBridge {
          return "DH is not ready";
       }
 
+      forgetChunkHash(level, chunk.getPos().x(), chunk.getPos().z());
+
       try {
          DhApiResult<Void> result = DhApi.Delayed.terrainRepo.overwriteChunkDataAsync(level, new Object[] {chunk, mcLevel});
          return result != null && result.success ? null : result == null ? "no result" : result.message;
       } catch (Throwable t) {
          return t.toString();
+      }
+   }
+
+   /** Set once the hash table proved unreachable, so a changed DH costs one log line, not thousands. */
+   private static volatile boolean chunkHashUnreachable;
+
+   /**
+    * Makes DH forget the content hash it holds for one chunk, so the next submission of it is
+    * applied rather than skipped.
+    *
+    * <p>Before DH processes a chunk it compares the chunk's block/biome hash with its
+    * {@code ChunkHash} table and silently drops the update if they match ({@code
+    * disableUnchangedChunkCheck}, off by default). That is meant for the client re-loading ground
+    * it already has. But the hash is recorded independently of the data: a chunk whose data never
+    * reached the database -- lost from DH's delayed save at a disconnect, or from its update queue
+    * -- keeps its hash. Every later resend of the same ground then matches and is discarded, so the
+    * hole is permanent, however many times the server sends it. That is what 0.10.2 ran into: the
+    * declaration fixed, a full resend, and the same black chunks along the old frontier.
+    *
+    * <p>Everything streamed is sent precisely because this client does not have it, so it should
+    * always be applied. Forgetting the hash first does that, for exactly the chunks being written
+    * and no others; chunks the client loads itself keep DH's check.
+    *
+    * <p>This is the one place this class reaches past DH's api package. Every member it touches is
+    * public, and it fails open: if DH's internals have moved, it logs once and the submit goes
+    * ahead as before.
+    */
+   private static void forgetChunkHash(IDhApiLevelWrapper level, int chunkX, int chunkZ) {
+      if (chunkHashUnreachable) {
+         return;
+      }
+
+      try {
+         com.seibel.distanthorizons.core.world.AbstractDhWorld world =
+            com.seibel.distanthorizons.core.api.internal.SharedApi.getAbstractDhWorld();
+
+         if (world == null || !(level instanceof com.seibel.distanthorizons.core.wrapperInterfaces.world.ILevelWrapper wrapper)) {
+            return;
+         }
+
+         if (world.getLevel(wrapper) instanceof com.seibel.distanthorizons.core.level.AbstractDhLevel dhLevel
+            && dhLevel.chunkHashRepo != null) {
+            dhLevel.chunkHashRepo.deleteWithKey(new com.seibel.distanthorizons.core.pos.DhChunkPos(chunkX, chunkZ));
+         }
+      } catch (Throwable t) {
+         chunkHashUnreachable = true;
+         Log.warn("could not clear Distant Horizons' chunk hash; resent chunks DH already hashed may be skipped", t);
       }
    }
 
