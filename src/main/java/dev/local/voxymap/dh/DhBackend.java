@@ -87,17 +87,19 @@ public final class DhBackend implements LodBackend {
    }
 
    /**
-    * Nothing to give back.
+    * Forgets the level and gives the read cache's pooled data sources back to DH.
     *
     * <p>The Voxy source has to be released off the main thread or the game deadlocks on shutdown;
-    * DH hands out no reference at all, so this is just forgetting. The interface still carries the
-    * release calls because the sweep worker is written against it.
+    * DH hands out no reference that needs that care, only the cache, whose sources come out of
+    * DH's array pools and go back only through {@code close()}.
     */
    @Override
    public void close() {
+      IDhApiTerrainDataCache old = this.cache;
       this.boundLevel = null;
       this.dhLevel = null;
       this.cache = null;
+      DhBridge.closeCache(old);
    }
 
    @Override

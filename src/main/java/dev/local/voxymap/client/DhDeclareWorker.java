@@ -82,31 +82,30 @@ public final class DhDeclareWorker {
          int before = store.size();
          IDhApiTerrainDataCache cache = DhBridge.newCache();
          long deadline = startedAt + BUDGET_NANOS;
-
-         LongArrayList keys = new LongArrayList(store.columns().keySet());
-         // Shuffled with a fixed seed: spread across the map rather than along one axis, and the
-         // same order every session so a client on a slow disk keeps confirming the same columns
-         // instead of a different tenth each time.
-         java.util.Collections.shuffle(keys, new java.util.Random(0x766F786DL));
-
          it.unimi.dsi.fastutil.longs.LongOpenHashSet confirmed = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
 
-         for (int i = 0; i < keys.size(); i++) {
-            if (net.minecraft.client.Minecraft.getInstance().level != level) {
-               // Left the world mid-walk. Nothing to declare and nobody to declare it to.
-               this.publish(new LodDeclareWorker.Result(store, new Long2LongOpenHashMap(), 0, before, millisSince(startedAt)));
-               return;
-            }
+         try {
+            LongArrayList keys = sectionOrder(store.columns().keySet());
 
-            if ((i & 0x3F) == 0 && System.nanoTime() >= deadline) {
-               break;
-            }
+            for (int i = 0; i < keys.size(); i++) {
+               if (net.minecraft.client.Minecraft.getInstance().level != level) {
+                  // Left the world mid-walk. Nothing to declare and nobody to declare it to.
+                  this.publish(new LodDeclareWorker.Result(store, new Long2LongOpenHashMap(), 0, before, millisSince(startedAt)));
+                  return;
+               }
 
-            long key = keys.getLong(i);
+               if ((i & 0x3F) == 0 && System.nanoTime() >= deadline) {
+                  break;
+               }
 
-            if (this.confirm(dhLevel, key, cache)) {
-               confirmed.add(key);
+               long key = keys.getLong(i);
+
+               if (this.confirm(dhLevel, key, cache)) {
+                  confirmed.add(key);
+               }
             }
+         } finally {
+            DhBridge.closeCache(cache);
          }
 
          store.columns().keySet().retainAll(confirmed);
@@ -123,20 +122,66 @@ public final class DhDeclareWorker {
    }
 
    /**
-    * Whether DH has anything at all in the column.
+    * The store's columns in the order to confirm them: whole DH sections at a time, sections
+    * shuffled.
     *
-    * <p>One chunk of the four, not all four: this is a test for "the database still has this
-    * ground", not an audit of it. A column DH kept only part of will be re-sent as a whole the next
-    * time its content hash disagrees with the server's, which is the mechanism that repairs
-    * everything else too.
+    * <p>A DH section is 64 blocks across, so it holds 2x2 of our 32-block columns. Reading a
+    * column decodes its whole section, and the cache keeps it for the other three, but only while
+    * they come next: a column-level shuffle put them thousands of reads apart and paid the decode
+    * four times. The shuffle has a fixed seed: spread across the map rather than along one axis,
+    * and the same order every session so a client on a slow disk keeps confirming the same ground
+    * instead of a different tenth each time.
+    */
+   private static LongArrayList sectionOrder(it.unimi.dsi.fastutil.longs.LongSet columns) {
+      it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<LongArrayList> bySection = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+
+      for (long key : columns) {
+         long section = SectionIndex.columnKey(SectionIndex.columnX(key) >> 1, SectionIndex.columnZ(key) >> 1);
+         bySection.computeIfAbsent(section, k -> new LongArrayList(4)).add(key);
+      }
+
+      LongArrayList sections = new LongArrayList(bySection.keySet());
+      sections.sort(null);
+      java.util.Collections.shuffle(sections, new java.util.Random(0x766F786DL));
+
+      LongArrayList out = new LongArrayList(columns.size());
+
+      for (int i = 0; i < sections.size(); i++) {
+         LongArrayList members = bySection.get(sections.getLong(i));
+         members.sort(null);
+         out.addAll(members);
+      }
+
+      return out;
+   }
+
+   /**
+    * Whether DH holds the whole column: all four of its chunks, every column of each.
+    *
+    * <p>This used to read one chunk and accept any answer that was not an error, which accepted
+    * everything. DH answers a chunk it has nothing for with a full-size array of nulls and a
+    * <em>successful</em> result, so the check was "the read did not throw". Columns DH had lost --
+    * accepted for ingest, then dropped from its update queue or never flushed before a disconnect
+    * -- were declared as held, the server believed it, and they were never sent again. They showed
+    * as black chunk-sized holes along whatever had been the streaming frontier when they were lost.
+    *
+    * <p>DH ingests a chunk at a time, so it can hold three of a column's chunks and not the fourth.
+    * Hence all four. Anything short of that is not declared, and the server re-sends the column.
     */
    private boolean confirm(IDhApiLevelWrapper dhLevel, long columnKey, IDhApiTerrainDataCache cache) {
       int chunkX = SectionIndex.columnX(columnKey) << 1;
       int chunkZ = SectionIndex.columnZ(columnKey) << 1;
 
       try {
-         var data = DhBridge.chunkData(dhLevel, chunkX, chunkZ, cache);
-         return data != null && data.length > 0;
+         for (int dz = 0; dz < 2; dz++) {
+            for (int dx = 0; dx < 2; dx++) {
+               if (!DhBridge.chunkComplete(DhBridge.chunkData(dhLevel, chunkX + dx, chunkZ + dz, cache))) {
+                  return false;
+               }
+            }
+         }
+
+         return true;
       } catch (Throwable t) {
          return false;
       }

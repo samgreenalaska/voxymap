@@ -354,7 +354,7 @@ public final class LodClient {
 
       Log.info(
          "declaring " + result.declared() + " LOD columns in " + declaredRegions + " regions to the server"
-            + (result.dropped() > 0 ? " (" + result.dropped() + " stored columns are no longer in Voxy's database and were dropped)" : "")
+            + (result.dropped() > 0 ? " (" + result.dropped() + " stored columns could not be confirmed in the LOD database and will be re-sent)" : "")
             + ", read in " + result.millis() + " ms"
       );
 

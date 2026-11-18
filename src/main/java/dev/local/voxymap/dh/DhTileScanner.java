@@ -98,7 +98,9 @@ public final class DhTileScanner implements TileScanner {
             int chunkZ = (tileChunkZ << 2) + dz;
             DhApiTerrainDataPoint[][][] data = DhBridge.chunkData(this.dhLevel, chunkX, chunkZ, this.cache);
 
-            if (data == null || data.length == 0) {
+            // An empty chunk arrives as a full-size array of nulls, not as null; see
+            // DhBridge.columnsWithData. Without the count, chunksWithData counted every chunk read.
+            if (DhBridge.columnsWithData(data) == 0) {
                this.markChunkIncomplete(out, dx << 4, dz << 4);
                this.noDataColumns += 256;
                continue;

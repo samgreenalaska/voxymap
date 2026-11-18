@@ -175,6 +175,53 @@ public final class DhBridge {
    }
 
    /**
+    * How many of a chunk read's columns DH actually holds terrain for.
+    *
+    * <p>The array {@link #chunkData} returns is never the answer to "is anything there". DH builds
+    * the full {@code [16][16]} array before it looks, and a chunk it has nothing for comes back as
+    * a <em>successful</em> read ("No data found.") with every column null. So {@code data != null &&
+    * data.length > 0} is true for every read that did not throw, and testing that is testing
+    * nothing. Count the columns.
+    */
+   public static int columnsWithData(DhApiTerrainDataPoint[][][] data) {
+      if (data == null) {
+         return 0;
+      }
+
+      int n = 0;
+
+      for (DhApiTerrainDataPoint[][] row : data) {
+         if (row == null) {
+            continue;
+         }
+
+         for (DhApiTerrainDataPoint[] column : row) {
+            if (column != null && column.length > 0) {
+               n++;
+            }
+         }
+      }
+
+      return n;
+   }
+
+   /** Whether DH holds every column of the chunk: the bar for claiming the chunk is held. */
+   public static boolean chunkComplete(DhApiTerrainDataPoint[][][] data) {
+      if (data == null || data.length == 0) {
+         return false;
+      }
+
+      // Every row present and square: a coarse answer is still a whole chunk, a ragged one is not.
+      for (DhApiTerrainDataPoint[][] row : data) {
+         if (row == null || row.length != data.length) {
+            return false;
+         }
+      }
+
+      return columnsWithData(data) == data.length * data.length;
+   }
+
+   /**
     * DH's own render distance in chunks, which is how far out it is worth reading.
     *
     * @return the configured radius, or the fallback if DH will not say
@@ -202,6 +249,25 @@ public final class DhBridge {
          return Boolean.TRUE.equals(DhApi.Delayed.configs.graphics().renderingEnabled().getValue());
       } catch (Throwable t) {
          return false;
+      }
+   }
+
+   /**
+    * Gives a cache's data sources back to DH.
+    *
+    * <p>The sources a cache holds come out of DH's array pools, and only {@code close()} returns
+    * them. Dropping the reference instead leaves them for the soft-reference GC to find, which
+    * returns the memory but never the pooled arrays.
+    */
+   public static void closeCache(IDhApiTerrainDataCache cache) {
+      if (cache == null) {
+         return;
+      }
+
+      try {
+         cache.close();
+      } catch (Throwable t) {
+         Log.diag("DH cache close failed: " + t);
       }
    }
 

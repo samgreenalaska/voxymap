@@ -78,7 +78,7 @@ public final class DhProbe {
       // and succeed the same way here or this command is testing something else.
       DhApiTerrainDataPoint[][][] data = DhBridge.chunkData(wrapper, chunkX, chunkZ, DhBridge.newCache());
 
-      if (data == null || data.length == 0) {
+      if (DhBridge.columnsWithData(data) == 0) {
          out.add("DH has nothing stored here. The map will leave this chunk to Xaero.");
          out.add("  DH said: " + (DhBridge.lastReadMessage() == null ? "nothing (a successful, empty answer)" : DhBridge.lastReadMessage()));
          return out;
